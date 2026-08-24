@@ -26,6 +26,16 @@ import { MAX_BODY_BYTES, type HeaderSource } from "./ingest/types.js";
 import { bootstrapOrganization } from "./onboarding/bootstrap.js";
 import { assignEmployeeShift, saveShift } from "./shifts/management.js";
 import { resolveShiftInference } from "./shifts/inference-management.js";
+import {
+  activateManualSubscription,
+  configureBillingProduct,
+  createCustomerPortalSession,
+  createSubscriptionCheckout,
+  getSaasCatalog,
+  listPlatformSubscriptions,
+  setSubscriptionStatus,
+} from "./billing/functions.js";
+import { dodoPaymentsWebhook } from "./billing/webhook.js";
 
 const ingestion = new IngestionService(
   new FirestoreIngestRepository(firestore),
@@ -94,13 +104,20 @@ export const hikbridgeV1Events = onRequest({
 });
 
 export {
+  activateManualSubscription,
   assignEmployeeShift,
   bootstrapOrganization,
+  configureBillingProduct,
   createBranch,
+  createCustomerPortalSession,
   createDepartment,
   createEmployee,
   createManualAdjustment,
+  createSubscriptionCheckout,
   deleteBranch,
+  dodoPaymentsWebhook,
+  getSaasCatalog,
+  listPlatformSubscriptions,
   mapDeviceIdentity,
   processAttendanceRecalculationJobs,
   provisionDevice,
@@ -113,5 +130,6 @@ export {
   resolveShiftInference,
   saveShift,
   setDeviceEnabled,
+  setSubscriptionStatus,
   updateEmployeeDepartment,
 };

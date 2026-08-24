@@ -15,6 +15,7 @@ import {
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 
+import { BrandLogo } from "@/components/brand-logo";
 import { Button, ErrorState, LoadingState } from "@/components/ui";
 import { useAuth } from "@/lib/auth/auth-provider";
 import { bootstrapOrganization } from "@/lib/firebase/actions";
@@ -157,7 +158,9 @@ export default function OnboardingPage() {
       await bootstrapOrganization(toBootstrapRequest(draft));
       const ready = await refreshProfile();
       if (!ready) throw new Error("Organization was created, but the workspace profile could not be refreshed.");
-      router.replace("/dashboard");
+      const selectedPlan = sessionStorage.getItem("infact_selected_plan") ?? "silver";
+      const selectedCycle = sessionStorage.getItem("infact_selected_cycle") ?? "annual";
+      router.replace(`/subscribe?plan=${encodeURIComponent(selectedPlan)}&cycle=${encodeURIComponent(selectedCycle)}`);
       router.refresh();
     } catch (creationError) {
       setSubmitError(safeError(creationError));
@@ -175,7 +178,7 @@ export default function OnboardingPage() {
   return (
     <main className="onboarding-page">
       <header className="onboarding-topbar">
-        <div className="onboarding-brand"><span className="brand-mark">I</span><span>Infact Attendance</span></div>
+        <div className="onboarding-brand"><BrandLogo priority /></div>
         <div className="onboarding-account">
           <span><small>Signed in as</small><strong>{identity.email || identity.displayName}</strong></span>
           <button type="button" onClick={() => void logout()}>Sign out</button>

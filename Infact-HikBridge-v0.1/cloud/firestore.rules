@@ -32,6 +32,17 @@ service cloud.firestore {
       return hasRole(orgId, ['organizationOwner', 'hrAdmin', 'manager']);
     }
 
+    function hasActiveSubscription(orgId) {
+      let subscriptionPath = /databases/$(database)/documents/organizations/$(orgId)/subscription/current;
+      return isPlatformAdmin() || (
+        exists(subscriptionPath) &&
+        get(subscriptionPath).data.accessStatus == 'active' &&
+        (!('endsAt' in get(subscriptionPath).data) ||
+          get(subscriptionPath).data.endsAt == null ||
+          get(subscriptionPath).data.endsAt > request.time)
+      );
+    }
+
     function userHasNoOrganization() {
       let userPath = /databases/$(database)/documents/users/$(request.auth.uid);
       return !exists(userPath) ||
@@ -118,17 +129,49 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // The published package catalog is intentionally public. Provider product
+    // identifiers, customers, subscriptions, webhook receipts, and audit trails
+    // remain server-only and are exposed through role-checked Cloud Functions.
+    match /saasPlans/{planId} {
+      allow read: if true;
+      allow write: if false;
+    }
+    match /billingPlanConfig/{document=**} {
+      allow read, write: if false;
+    }
+    match /billingProductLookup/{document=**} {
+      allow read, write: if false;
+    }
+    match /billingAccounts/{document=**} {
+      allow read, write: if false;
+    }
+    match /billingCheckoutSessions/{document=**} {
+      allow read, write: if false;
+    }
+    match /billingProviderSubscriptions/{document=**} {
+      allow read, write: if false;
+    }
+    match /billingWebhookEvents/{document=**} {
+      allow read, write: if false;
+    }
+    match /saasSubscriptions/{document=**} {
+      allow read, write: if false;
+    }
+    match /platformBillingAudits/{document=**} {
+      allow read, write: if false;
+    }
+
     match /organizations/{orgId} {
       allow read: if isPlatformAdmin() || isMember(orgId);
       allow create: if isPlatformAdmin() || validBootstrapOrganization(orgId);
       allow delete: if isPlatformAdmin();
-      allow update: if hasRole(orgId, ['organizationOwner']);
+      allow update: if hasActiveSubscription(orgId) && hasRole(orgId, ['organizationOwner']);
 
       match /members/{userId} {
         allow read: if isPlatformAdmin() ||
           (signedIn() && request.auth.uid == userId) ||
           hasRole(orgId, ['organizationOwner', 'hrAdmin']);
-        allow create: if hasRole(orgId, ['organizationOwner']) ||
+        allow create: if (hasActiveSubscription(orgId) && hasRole(orgId, ['organizationOwner'])) ||
           (signedIn() && request.auth.uid == userId &&
             isCompleteOrganizationBootstrap(orgId) &&
             request.resource.data.keys().hasOnly([
@@ -139,7 +182,12 @@ service cloud.firestore {
             request.resource.data.branchIds == [getAfter(/databases/$(database)/documents/organizations/$(orgId)).data.primaryBranchId] &&
             request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time &&
             request.resource.data.createdBy == request.auth.uid && request.resource.data.updatedBy == request.auth.uid);
-        allow update, delete: if hasRole(orgId, ['organizationOwner']);
+        allow update, delete: if hasActiveSubscription(orgId) && hasRole(orgId, ['organizationOwner']);
+      }
+
+      match /subscription/{subscriptionId} {
+        allow read: if isMember(orgId) || isPlatformAdmin();
+        allow write: if false;
       }
 
       match /branches/{branchId} {
@@ -154,7 +202,7 @@ service cloud.firestore {
             request.resource.data.status == 'active' &&
             request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time &&
             request.resource.data.createdBy == request.auth.uid && request.resource.data.updatedBy == request.auth.uid;
-        allow update: if isHR(orgId);
+        allow update: if hasActiveSubscription(orgId) && isHR(orgId);
         allow delete: if false;
       }
 
@@ -286,13 +334,13 @@ service cloud.firestore {
 
       match /holidays/{holidayId} {
         allow read: if isMember(orgId) || isPlatformAdmin();
-        allow create, update: if isHR(orgId);
+        allow create, update: if hasActiveSubscription(orgId) && isHR(orgId);
         allow delete: if false;
       }
 
       match /leaveRequests/{leaveId} {
         allow read: if isMember(orgId) || isPlatformAdmin();
-        allow create, update: if isHR(orgId);
+        allow create, update: if hasActiveSubscription(orgId) && isHR(orgId);
         allow delete: if false;
       }
 
@@ -353,7 +401,7 @@ service cloud.firestore {
 
       match /settings/{settingId} {
         allow read: if isHR(orgId);
-        allow create, update: if hasRole(orgId, ['organizationOwner']);
+        allow create, update: if hasActiveSubscription(orgId) && hasRole(orgId, ['organizationOwner']);
         allow delete: if false;
       }
 

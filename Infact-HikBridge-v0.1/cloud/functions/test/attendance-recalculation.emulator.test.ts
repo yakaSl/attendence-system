@@ -17,6 +17,16 @@ const organization = db.collection("organizations").doc(organizationId);
 async function seed(): Promise<void> {
   await organization.set({ name: "Test Organization", timezone: "Asia/Colombo" });
   await organization.collection("members").doc("owner-1").set({ role: "organizationOwner", active: true });
+  await organization.collection("subscription").doc("current").set({
+    organizationId,
+    planId: "silver",
+    planName: "Silver",
+    billingCycle: "monthly",
+    billingStatus: "active",
+    accessStatus: "active",
+    source: "complimentary",
+    limits: { employees: 100, devices: 3, branches: 3, adminUsers: 10, historyYears: 2 },
+  });
   await organization.collection("employees").doc(employeeId).set({
     name: "Test Employee",
     branchId: "branch-1",

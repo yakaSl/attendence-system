@@ -3,11 +3,13 @@
 import {
   CalendarClock,
   Clock3,
+  CreditCard,
   FileSpreadsheet,
   Fingerprint,
   Gauge,
   Menu,
   Settings,
+  ShieldCheck,
   Users,
   X,
 } from "lucide-react";
@@ -15,6 +17,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 
+import { BrandLogo } from "@/components/brand-logo";
 import { useAuth } from "@/lib/auth/auth-provider";
 import { useData } from "@/lib/data/data-provider";
 import { cn, initials } from "@/lib/format";
@@ -58,14 +61,17 @@ export function AppShell({ children }: { children: ReactNode }) {
   }
 
   if (user === null) return null;
+  const accountNavigation = [
+    ...(user.role === "organizationOwner" ? [{ href: "/billing", label: "Billing", icon: CreditCard }] : []),
+    ...(user.role === "platformAdmin" ? [{ href: "/platform", label: "Platform", icon: ShieldCheck }] : []),
+  ];
 
   return (
     <div className="app-frame">
       <aside id="primary-navigation" className={cn("sidebar", open && "sidebar-open")}>
         <div className="brand-row">
           <Link href="/dashboard" className="brand" onClick={() => setOpen(false)}>
-            <span className="brand-mark">I</span>
-            <span><strong>Infact</strong><small>Attendance Cloud</small></span>
+            <BrandLogo priority />
           </Link>
           <button className="icon-button sidebar-close" onClick={() => setOpen(false)} aria-label="Close navigation"><X size={18} /></button>
         </div>
@@ -73,6 +79,15 @@ export function AppShell({ children }: { children: ReactNode }) {
           <p>Workspace</p>
           {navigation.map(({ href, label, icon: Icon }) => {
             const active = pathname === href || (href !== "/dashboard" && pathname.startsWith(`${href}/`));
+            return (
+              <Link key={href} href={href} className={cn("nav-link", active && "nav-link-active")} onClick={() => setOpen(false)}>
+                <Icon size={17} strokeWidth={1.8} aria-hidden />
+                <span>{label}</span>
+              </Link>
+            );
+          })}
+          {accountNavigation.map(({ href, label, icon: Icon }) => {
+            const active = pathname === href || pathname.startsWith(`${href}/`);
             return (
               <Link key={href} href={href} className={cn("nav-link", active && "nav-link-active")} onClick={() => setOpen(false)}>
                 <Icon size={17} strokeWidth={1.8} aria-hidden />

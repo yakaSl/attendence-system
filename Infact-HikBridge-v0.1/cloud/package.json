@@ -1,5 +1,5 @@
 {
-  "name": "infact-attendance-cloud",
+  "name": "infact-pulse-cloud",
   "version": "0.1.0",
   "private": true,
   "workspaces": [
@@ -14,6 +14,7 @@
     "test:emulator:unit": "npm run test:rules:unit && npm --workspace functions run test:emulator",
     "test:rules": "firebase emulators:exec --project demo-hikbridge --only firestore \"npm run test:emulator:unit\"",
     "bootstrap:owner": "node scripts/bootstrap-owner.mjs",
+    "set:platform-admin": "node scripts/set-platform-admin.mjs",
     "verify": "npm run lint && npm run typecheck && npm run test && npm run test:rules"
   },
   "devDependencies": {

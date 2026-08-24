@@ -1,5 +1,5 @@
 {
-  "name": "@infact-attendance/functions",
+  "name": "@infact-pulse/functions",
   "version": "0.1.0",
   "private": true,
   "main": "lib/index.js",
@@ -11,12 +11,13 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src test --max-warnings=0",
-    "test": "vitest run test/protocol.test.ts test/ingestion.test.ts test/secret-manager.test.ts test/attendance-engine.test.ts test/shift-inference.test.ts test/onboarding.test.ts",
+    "test": "vitest run test/protocol.test.ts test/ingestion.test.ts test/secret-manager.test.ts test/attendance-engine.test.ts test/shift-inference.test.ts test/onboarding.test.ts test/billing-catalog.test.ts",
     "test:emulator": "vitest run test/firestore-repository.emulator.test.ts test/attendance-recalculation.emulator.test.ts test/onboarding.emulator.test.ts"
   },
   "dependencies": {
     "@google-cloud/secret-manager": "6.3.0",
     "@js-temporal/polyfill": "0.5.1",
+    "dodopayments": "^2.48.0",
     "firebase-admin": "13.10.0",
     "firebase-functions": "7.3.2",
     "zod": "4.4.3"

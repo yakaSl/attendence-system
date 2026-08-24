@@ -1,6 +1,6 @@
-# Infact HikBridge Attendance Cloud
+# Infact Pulse
 
-Infact HikBridge connects a Hikvision fingerprint attendance terminal on a customer LAN to a multi-tenant Firebase attendance application. The Windows bridge polls ISAPI, saves every event locally before advancing its checkpoint, uploads signed batches when the internet is available, and reports device health. Cloud Functions authenticate and deduplicate evidence, resolve employees, calculate attendance, and expose tenant-scoped operational data to the Next.js dashboard.
+Infact Pulse connects a Hikvision fingerprint attendance terminal on a customer LAN to a multi-tenant Firebase attendance application through the Infact HikBridge agent. The Windows bridge polls ISAPI, saves every event locally before advancing its checkpoint, uploads signed batches when the internet is available, and reports device health. Cloud Functions authenticate and deduplicate evidence, resolve employees, calculate attendance, and expose tenant-scoped operational data to the Next.js dashboard.
 
 The bridge transports evidence; it does not calculate shifts, lateness, leave, or overtime. Raw cloud events remain immutable so historical attendance can be recalculated after delayed punches, mappings, corrections, or policy changes.
 
@@ -19,7 +19,7 @@ Hikvision DS-K1A8503EF
   -> authenticated Next.js HR operations dashboard
 ```
 
-See [Architecture](docs/ARCHITECTURE.md), [Hikvision integration](docs/HIKVISION_INTEGRATION.md), [cloud fingerprint enrollment](docs/FINGERPRINT_ENROLLMENT.md), [Firebase architecture](docs/FIREBASE_ARCHITECTURE.md), and [Security model](docs/SECURITY_MODEL.md).
+See [Architecture](docs/ARCHITECTURE.md), [Hikvision integration](docs/HIKVISION_INTEGRATION.md), [cloud fingerprint enrollment](docs/FINGERPRINT_ENROLLMENT.md), [Firebase architecture](docs/FIREBASE_ARCHITECTURE.md), [SaaS deployment](docs/SAAS_DEPLOYMENT.md), and [Security model](docs/SECURITY_MODEL.md).
 
 ## Repository layout
 

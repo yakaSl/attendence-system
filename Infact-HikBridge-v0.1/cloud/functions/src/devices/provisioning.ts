@@ -7,6 +7,7 @@ import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { z } from "zod";
 
 import { requireAuthentication, requireOrganizationRole, type AuthContext } from "../authz.js";
+import { assertCreationWithinLimit } from "../billing/entitlements.js";
 import { firestore } from "../firebase.js";
 
 const region = "asia-south1";
@@ -78,6 +79,13 @@ export class DeviceProvisioningService {
     let retryingFailedProvision = false;
 
     await this.db.runTransaction(async (transaction) => {
+      await assertCreationWithinLimit(
+        transaction,
+        this.db,
+        input.organizationId,
+        "devices",
+        organization.collection("devices").where("enabled", "==", true),
+      );
       const [organizationSnapshot, branchSnapshot, registrySnapshot] = await transaction.getAll(organization, branch, registry);
       if (organizationSnapshot === undefined || branchSnapshot === undefined || registrySnapshot === undefined) {
         throw new Error("Provisioning transaction did not return every requested document");

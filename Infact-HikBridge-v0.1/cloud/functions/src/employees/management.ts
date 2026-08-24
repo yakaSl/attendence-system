@@ -6,6 +6,7 @@ import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { z } from "zod";
 
 import { requireAuthentication, requireOrganizationRole, type AuthContext } from "../authz.js";
+import { assertCreationWithinLimit } from "../billing/entitlements.js";
 import { firestore } from "../firebase.js";
 import { identityKey } from "../ingest/firestore-repository.js";
 
@@ -70,6 +71,13 @@ export async function createEmployeeInFirestore(
   const now = Timestamp.now();
 
   await db.runTransaction(async (transaction) => {
+    await assertCreationWithinLimit(
+      transaction,
+      db,
+      input.organizationId,
+      "employees",
+      organization.collection("employees").where("active", "==", true),
+    );
     const references = [codeRegistry, branch, ...(department === null ? [] : [department]), ...(deviceRegistry === null ? [] : [deviceRegistry])];
     const snapshots = await transaction.getAll(...references);
     const codeSnapshot = snapshots[0];

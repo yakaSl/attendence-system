@@ -40,6 +40,8 @@ async function seed(): Promise<void> {
     await setDoc(doc(db, "organizations/org-a/members/manager-a"), { role: "manager", active: true });
     await setDoc(doc(db, "organizations/org-a/members/viewer-a"), { role: "viewer", active: true });
     await setDoc(doc(db, "organizations/org-b/members/user-b"), { role: "organizationOwner", active: true });
+    await setDoc(doc(db, "organizations/org-a/subscription/current"), { accessStatus: "active", planId: "silver", endsAt: null });
+    await setDoc(doc(db, "organizations/org-b/subscription/current"), { accessStatus: "active", planId: "bronze", endsAt: null });
     await setDoc(doc(db, "organizations/org-a/employees/employee-1"), { employeeCode: "EMP0017", name: "Kasun" });
     await setDoc(doc(db, "organizations/org-a/attendanceEvents/event-1"), { source: "hikvision", employeeNo: "17" });
     await setDoc(doc(db, "organizations/org-a/devices/device-1"), { name: "Main Entrance", enabled: true });
@@ -158,6 +160,29 @@ describe("Firestore tenant and role isolation", () => {
     const viewer = environment.authenticatedContext("viewer-a").firestore();
     await assertSucceeds(getDoc(doc(viewer, "organizations/org-a/employees/employee-1")));
     await assertFails(getDoc(doc(viewer, "organizations/org-b")));
+  });
+
+  it("publishes plan availability but keeps billing state server-controlled", async () => {
+    await seed();
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), "saasPlans/silver"), { name: "Silver", availability: { monthly: true, annual: true } });
+    });
+    const anonymous = environment.unauthenticatedContext().firestore();
+    const owner = environment.authenticatedContext("owner-a").firestore();
+    await assertSucceeds(getDoc(doc(anonymous, "saasPlans/silver")));
+    await assertSucceeds(getDoc(doc(owner, "organizations/org-a/subscription/current")));
+    await assertFails(setDoc(doc(owner, "organizations/org-a/subscription/current"), { accessStatus: "restricted" }));
+    await assertFails(getDoc(doc(owner, "saasSubscriptions/org-a")));
+  });
+
+  it("blocks browser mutations after a subscription is paused", async () => {
+    await seed();
+    const owner = environment.authenticatedContext("owner-a").firestore();
+    await assertSucceeds(setDoc(doc(owner, "organizations/org-a/settings/notifications"), { email: true }));
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await updateDoc(doc(context.firestore(), "organizations/org-a/subscription/current"), { accessStatus: "restricted" });
+    });
+    await assertFails(setDoc(doc(owner, "organizations/org-a/settings/payroll"), { locked: true }));
   });
 
   it("requires server callables for employee mutations", async () => {

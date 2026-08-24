@@ -4,6 +4,7 @@ import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { z } from "zod";
 
 import { requireAuthentication, requireOrganizationRole, type AuthContext } from "../authz.js";
+import { assertCreationWithinLimit } from "../billing/entitlements.js";
 import { firestore } from "../firebase.js";
 
 const idSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/);
@@ -46,6 +47,13 @@ export async function createBranchInFirestore(
   let timezone = "";
 
   await db.runTransaction(async (transaction) => {
+    await assertCreationWithinLimit(
+      transaction,
+      db,
+      input.organizationId,
+      "branches",
+      organization.collection("branches").where("status", "==", "active"),
+    );
     const [organizationSnapshot, branchSnapshot] = await Promise.all([
       transaction.get(organization),
       transaction.get(branch),

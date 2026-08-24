@@ -10,7 +10,7 @@ import {
   queueFingerprintEnrollment,
   updateEmployeeDepartmentInFirestore,
 } from "../src/employees/management.js";
-import { bootstrapOrganizationInFirestore, type BootstrapOrganizationInput } from "../src/onboarding/bootstrap.js";
+import { bootstrapOrganizationInFirestore as bootstrapOrganization, type BootstrapOrganizationInput } from "../src/onboarding/bootstrap.js";
 
 const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST;
 const run = emulatorHost === undefined ? describe.skip : describe;
@@ -33,6 +33,25 @@ const input: BootstrapOrganizationInput = {
   lateCalculationMode: "after_grace",
   missingPunchPolicy: "flag_exception",
 };
+
+async function bootstrapOrganizationInFirestore(
+  database: typeof db,
+  auth: { uid: string; token: Record<string, unknown> },
+  organizationInput: BootstrapOrganizationInput,
+) {
+  const result = await bootstrapOrganization(database, auth, organizationInput);
+  await database.doc(`organizations/${organizationInput.organizationId}/subscription/current`).set({
+    organizationId: organizationInput.organizationId,
+    planId: "silver",
+    planName: "Silver",
+    billingCycle: "monthly",
+    billingStatus: "active",
+    accessStatus: "active",
+    source: "complimentary",
+    limits: { employees: 100, devices: 3, branches: 3, adminUsers: 10, historyYears: 2 },
+  });
+  return result;
+}
 
 run("organization onboarding", () => {
   beforeEach(async () => {
@@ -97,6 +116,17 @@ run("organization onboarding", () => {
     expect(branch.data()).toMatchObject({ name: "Kandy Office", timezone: "Asia/Colombo", status: "active" });
     expect(audits.docs).toHaveLength(1);
     expect(audits.docs[0]?.data()).toMatchObject({ action: "branch_created", branchId: "kandy", actorId: "owner-1" });
+  });
+
+  it("enforces the active package branch limit", async () => {
+    const auth = { uid: "owner-1", token: { email: "owner@example.com" } };
+    await bootstrapOrganizationInFirestore(db, auth, input);
+    await db.doc(`organizations/${input.organizationId}/subscription/current`).update({ "limits.branches": 1 });
+    await expect(createBranchInFirestore(db, auth, {
+      organizationId: input.organizationId,
+      branchId: "kandy",
+      name: "Kandy Office",
+    })).rejects.toMatchObject({ code: "resource-exhausted" } satisfies Partial<HttpsError>);
   });
 
   it("refuses duplicate branches", async () => {
@@ -224,6 +254,24 @@ run("organization onboarding", () => {
       deviceId: "office-main-01",
       fingerPrintId: 3,
     })).rejects.toMatchObject({ code: "failed-precondition" } satisfies Partial<HttpsError>);
+  });
+
+  it("enforces the active package employee limit", async () => {
+    const auth = { uid: "owner-1", token: { email: "owner@example.com" } };
+    await bootstrapOrganizationInFirestore(db, auth, input);
+    await db.doc(`organizations/${input.organizationId}/subscription/current`).update({ "limits.employees": 1 });
+    await createEmployeeInFirestore(db, auth, {
+      organizationId: input.organizationId,
+      employeeCode: "EMP-ONE",
+      name: "First Employee",
+      branchId: input.branchId,
+    });
+    await expect(createEmployeeInFirestore(db, auth, {
+      organizationId: input.organizationId,
+      employeeCode: "EMP-TWO",
+      name: "Second Employee",
+      branchId: input.branchId,
+    })).rejects.toMatchObject({ code: "resource-exhausted" } satisfies Partial<HttpsError>);
   });
 
   it("changes an employee department without altering their device identity", async () => {

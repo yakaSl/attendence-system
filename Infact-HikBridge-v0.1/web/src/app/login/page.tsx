@@ -1,9 +1,11 @@
 "use client";
 
 import { Fingerprint, LockKeyhole } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
 
+import { BrandLogo } from "@/components/brand-logo";
 import { Button, ErrorState } from "@/components/ui";
 import { useAuth } from "@/lib/auth/auth-provider";
 
@@ -33,7 +35,7 @@ export default function LoginPage() {
   return (
     <main className="login-page">
       <section className="login-intro">
-        <div className="login-brand"><span className="brand-mark">I</span><span>Infact Attendance</span></div>
+        <div className="login-brand"><BrandLogo priority /></div>
         <div>
           <p className="eyebrow">Hikvision-connected workforce operations</p>
           <h1>Attendance evidence, reconciled and ready for HR.</h1>
@@ -52,6 +54,7 @@ export default function LoginPage() {
           <label>Email address<input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
           <label>Password<input type="password" autoComplete="current-password" required minLength={6} value={password} onChange={(event) => setPassword(event.target.value)} /></label>
           <Button type="submit" disabled={submitting}>{submitting ? "Signing in…" : "Continue to workspace"}</Button>
+          <p className="signup-signin">New to Infact Pulse? <Link href="/pricing">View packages and start free</Link></p>
           <small>Access and activity are recorded under your authenticated account.</small>
         </form>
       </section>
