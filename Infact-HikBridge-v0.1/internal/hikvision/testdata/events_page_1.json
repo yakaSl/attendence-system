@@ -1,0 +1,26 @@
+{
+  "AcsEvent": {
+    "searchID": "{{SEARCH_ID}}",
+    "totalMatches": 2,
+    "responseStatusStrg": "MORE",
+    "numOfMatches": 1,
+    "InfoList": [
+      {
+        "major": 5,
+        "minor": 75,
+        "time": "2026-08-23T08:47:13+05:30",
+        "cardNo": "10017",
+        "name": "Kasun Perera",
+        "cardReaderNo": 1,
+        "doorNo": 1,
+        "employeeNoString": "17",
+        "serialNo": 4101,
+        "currentVerifyMode": "fingerPrint",
+        "attendanceStatus": "checkIn",
+        "futureFirmwareField": {
+          "quality": 97
+        }
+      }
+    ]
+  }
+}

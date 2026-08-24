@@ -1,0 +1,18 @@
+{
+  "AcsEvent": {
+    "searchID": "{{SEARCH_ID}}",
+    "totalMatches": 1,
+    "responseStatusStrg": "OK",
+    "numOfMatches": 1,
+    "InfoList": [
+      {
+        "major": 5,
+        "minor": 75,
+        "time": "2026-08-23T09:01:02",
+        "employeeNoString": "18",
+        "serialNo": 4103,
+        "unknownScalar": "preserve-me"
+      }
+    ]
+  }
+}

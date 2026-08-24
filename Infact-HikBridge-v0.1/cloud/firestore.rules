@@ -1,0 +1,313 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isPlatformAdmin() {
+      return signedIn() && 'platformAdmin' in request.auth.token && request.auth.token.platformAdmin == true;
+    }
+
+    function membership(orgId) {
+      return get(/databases/$(database)/documents/organizations/$(orgId)/members/$(request.auth.uid));
+    }
+
+    function isMember(orgId) {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/organizations/$(orgId)/members/$(request.auth.uid)) &&
+        membership(orgId).data.active == true;
+    }
+
+    function hasRole(orgId, roles) {
+      return isPlatformAdmin() || (isMember(orgId) && membership(orgId).data.role in roles);
+    }
+
+    function isHR(orgId) {
+      return hasRole(orgId, ['organizationOwner', 'hrAdmin']);
+    }
+
+    function canOperate(orgId) {
+      return hasRole(orgId, ['organizationOwner', 'hrAdmin', 'manager']);
+    }
+
+    function userHasNoOrganization() {
+      let userPath = /databases/$(database)/documents/users/$(request.auth.uid);
+      return !exists(userPath) ||
+        !('defaultOrganizationId' in get(userPath).data) ||
+        get(userPath).data.defaultOrganizationId == null ||
+        get(userPath).data.defaultOrganizationId == '';
+    }
+
+    function isCompleteOrganizationBootstrap(orgId) {
+      let organizationPath = /databases/$(database)/documents/organizations/$(orgId);
+      let profilePath = /databases/$(database)/documents/users/$(request.auth.uid);
+      let organizationAfter = getAfter(organizationPath).data;
+      return signedIn() &&
+        !exists(organizationPath) &&
+        userHasNoOrganization() &&
+        organizationAfter.createdBy == request.auth.uid &&
+        organizationAfter.primaryBranchId is string &&
+        organizationAfter.defaultShiftId is string &&
+        getAfter(profilePath).data.defaultOrganizationId == orgId &&
+        existsAfter(/databases/$(database)/documents/organizations/$(orgId)/members/$(request.auth.uid)) &&
+        existsAfter(/databases/$(database)/documents/organizations/$(orgId)/branches/$(organizationAfter.primaryBranchId)) &&
+        existsAfter(/databases/$(database)/documents/organizations/$(orgId)/shifts/$(organizationAfter.defaultShiftId)) &&
+        existsAfter(/databases/$(database)/documents/organizations/$(orgId)/organizationCreationAudits/$(request.auth.uid));
+    }
+
+    function validBootstrapOrganization(orgId) {
+      let data = request.resource.data;
+      return isCompleteOrganizationBootstrap(orgId) &&
+        orgId.matches('^[a-z0-9][a-z0-9-]{1,62}$') &&
+        data.keys().hasOnly([
+          'name', 'timezone', 'status', 'attendancePolicy', 'primaryBranchId',
+          'defaultShiftId', 'onboardingVersion', 'createdAt', 'createdBy',
+          'updatedAt', 'updatedBy'
+        ]) &&
+        data.name is string && data.name.size() >= 2 && data.name.size() <= 100 &&
+        data.timezone is string && data.timezone.size() >= 1 && data.timezone.size() <= 100 &&
+        data.status == 'active' &&
+        data.primaryBranchId.matches('^[a-z0-9][a-z0-9-]{1,62}$') &&
+        data.defaultShiftId.matches('^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$') &&
+        data.attendancePolicy.keys().hasOnly(['lateMinutesMode', 'missingPunchPolicy']) &&
+        data.attendancePolicy.lateMinutesMode in ['from_shift_start', 'after_grace'] &&
+        data.attendancePolicy.missingPunchPolicy == 'flag_exception' &&
+        data.onboardingVersion == 'onboarding-v1' &&
+        data.createdAt == request.time && data.updatedAt == request.time &&
+        data.createdBy == request.auth.uid && data.updatedBy == request.auth.uid;
+    }
+
+    function validBootstrapProfile(orgId) {
+      let data = request.resource.data;
+      return isCompleteOrganizationBootstrap(orgId) &&
+        data.defaultOrganizationId == orgId &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 200 &&
+        (!('email' in data) || (data.email is string && data.email == request.auth.token.email)) &&
+        data.onboardingVersion == 'onboarding-v1' &&
+        data.onboardingCompletedAt == request.time &&
+        data.updatedAt == request.time && data.updatedBy == request.auth.uid;
+    }
+
+    match /users/{userId} {
+      allow read: if isPlatformAdmin() || (signedIn() && request.auth.uid == userId);
+      allow create: if signedIn() && request.auth.uid == userId &&
+        request.resource.data.keys().hasOnly([
+          'displayName', 'email', 'defaultOrganizationId', 'onboardingCompletedAt',
+          'onboardingVersion', 'updatedAt', 'updatedBy'
+        ]) &&
+        validBootstrapProfile(request.resource.data.defaultOrganizationId);
+      allow update: if signedIn() && request.auth.uid == userId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'displayName', 'email', 'defaultOrganizationId', 'onboardingCompletedAt',
+          'onboardingVersion', 'updatedAt', 'updatedBy'
+        ]) &&
+        validBootstrapProfile(request.resource.data.defaultOrganizationId);
+      allow delete: if false;
+    }
+
+    // Bridge registries, replay records, and secret references are server-only.
+    match /bridgeDeviceRegistry/{document=**} {
+      allow read, write: if false;
+    }
+    match /_bridgeReplay/{document=**} {
+      allow read, write: if false;
+    }
+    match /_bridgeCredentials/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /organizations/{orgId} {
+      allow read: if isPlatformAdmin() || isMember(orgId);
+      allow create: if isPlatformAdmin() || validBootstrapOrganization(orgId);
+      allow delete: if isPlatformAdmin();
+      allow update: if hasRole(orgId, ['organizationOwner']);
+
+      match /members/{userId} {
+        allow read: if isPlatformAdmin() ||
+          (signedIn() && request.auth.uid == userId) ||
+          hasRole(orgId, ['organizationOwner', 'hrAdmin']);
+        allow create: if hasRole(orgId, ['organizationOwner']) ||
+          (signedIn() && request.auth.uid == userId &&
+            isCompleteOrganizationBootstrap(orgId) &&
+            request.resource.data.keys().hasOnly([
+              'role', 'active', 'branchIds', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+            ]) &&
+            request.resource.data.role == 'organizationOwner' &&
+            request.resource.data.active == true &&
+            request.resource.data.branchIds == [getAfter(/databases/$(database)/documents/organizations/$(orgId)).data.primaryBranchId] &&
+            request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time &&
+            request.resource.data.createdBy == request.auth.uid && request.resource.data.updatedBy == request.auth.uid);
+        allow update, delete: if hasRole(orgId, ['organizationOwner']);
+      }
+
+      match /branches/{branchId} {
+        allow read: if isMember(orgId) || isPlatformAdmin();
+        allow create: if isHR(orgId) ||
+          (isCompleteOrganizationBootstrap(orgId) &&
+            branchId == getAfter(/databases/$(database)/documents/organizations/$(orgId)).data.primaryBranchId &&
+            request.resource.data.keys().hasOnly([
+              'name', 'timezone', 'status', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+            ]) &&
+            request.resource.data.name is string && request.resource.data.name.size() >= 2 && request.resource.data.name.size() <= 100 &&
+            request.resource.data.timezone == getAfter(/databases/$(database)/documents/organizations/$(orgId)).data.timezone &&
+            request.resource.data.status == 'active' &&
+            request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time &&
+            request.resource.data.createdBy == request.auth.uid && request.resource.data.updatedBy == request.auth.uid);
+        allow update: if isHR(orgId);
+        allow delete: if false;
+      }
+
+      match /departments/{departmentId} {
+        allow read: if isMember(orgId) || isPlatformAdmin();
+        allow create, update: if isHR(orgId);
+        allow delete: if false;
+      }
+
+      match /employees/{employeeId} {
+        allow read: if isMember(orgId) || isPlatformAdmin();
+        allow create, update: if isHR(orgId);
+        allow delete: if false;
+      }
+
+      match /devices/{deviceId} {
+        allow read: if isMember(orgId) || isPlatformAdmin();
+        allow write: if false;
+      }
+
+      // Raw device events are immutable to every browser role, including platform admin.
+      match /attendanceEvents/{eventId} {
+        allow read: if isMember(orgId) || isPlatformAdmin();
+        allow write: if false;
+      }
+
+      match /attendanceDays/{dayId} {
+        allow read: if isMember(orgId) || isPlatformAdmin();
+        allow write: if false;
+      }
+
+      match /shifts/{shiftId} {
+        allow read: if isMember(orgId) || isPlatformAdmin();
+        allow create: if isCompleteOrganizationBootstrap(orgId) &&
+          shiftId == getAfter(/databases/$(database)/documents/organizations/$(orgId)).data.defaultShiftId &&
+          request.resource.data.keys().hasOnly([
+            'name', 'startTime', 'endTime', 'workingDays', 'gracePeriodMinutes',
+            'lateCalculationMode', 'breakMinutes', 'punchMode', 'earlyLeave',
+            'overtime', 'active', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'
+          ]) &&
+          request.resource.data.name is string && request.resource.data.name.size() >= 2 && request.resource.data.name.size() <= 100 &&
+          request.resource.data.startTime.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$') &&
+          request.resource.data.endTime.matches('^([01][0-9]|2[0-3]):[0-5][0-9]$') &&
+          request.resource.data.startTime != request.resource.data.endTime &&
+          request.resource.data.workingDays is list &&
+          request.resource.data.workingDays.size() >= 1 && request.resource.data.workingDays.size() <= 7 &&
+          request.resource.data.workingDays.hasOnly([1, 2, 3, 4, 5, 6, 7]) &&
+          request.resource.data.gracePeriodMinutes is int && request.resource.data.gracePeriodMinutes >= 0 && request.resource.data.gracePeriodMinutes <= 240 &&
+          request.resource.data.breakMinutes is int && request.resource.data.breakMinutes >= 0 && request.resource.data.breakMinutes <= 480 &&
+          request.resource.data.lateCalculationMode in ['from_shift_start', 'after_grace'] &&
+          request.resource.data.punchMode == 'first_last' &&
+          request.resource.data.earlyLeave.keys().hasOnly(['graceMinutes']) && request.resource.data.earlyLeave.graceMinutes == 0 &&
+          request.resource.data.overtime.keys().hasOnly(['enabled', 'startDelayMinutes', 'minimumMinutes', 'roundingMinutes', 'roundingMode']) &&
+          request.resource.data.overtime.enabled == false &&
+          request.resource.data.overtime.startDelayMinutes == 0 && request.resource.data.overtime.minimumMinutes == 0 &&
+          request.resource.data.overtime.roundingMinutes == 1 && request.resource.data.overtime.roundingMode == 'none' &&
+          request.resource.data.active == true &&
+          request.resource.data.createdAt == request.time && request.resource.data.updatedAt == request.time &&
+          request.resource.data.createdBy == request.auth.uid && request.resource.data.updatedBy == request.auth.uid;
+        allow update, delete: if false;
+      }
+
+      match /organizationCreationAudits/{userId} {
+        allow read: if isHR(orgId);
+        allow create: if signedIn() && request.auth.uid == userId &&
+          isCompleteOrganizationBootstrap(orgId) &&
+          request.resource.data.keys().hasOnly([
+            'action', 'organizationId', 'branchId', 'shiftId', 'actorId', 'createdAt'
+          ]) &&
+          request.resource.data.action == 'organization_created' &&
+          request.resource.data.organizationId == orgId &&
+          request.resource.data.branchId == getAfter(/databases/$(database)/documents/organizations/$(orgId)).data.primaryBranchId &&
+          request.resource.data.shiftId == getAfter(/databases/$(database)/documents/organizations/$(orgId)).data.defaultShiftId &&
+          request.resource.data.actorId == request.auth.uid && request.resource.data.createdAt == request.time;
+        allow update, delete: if false;
+      }
+
+      match /shiftAssignments/{assignmentId} {
+        allow read: if isMember(orgId) || isPlatformAdmin();
+        allow write: if false;
+      }
+
+      match /holidays/{holidayId} {
+        allow read: if isMember(orgId) || isPlatformAdmin();
+        allow create, update: if isHR(orgId);
+        allow delete: if false;
+      }
+
+      match /leaveRequests/{leaveId} {
+        allow read: if isMember(orgId) || isPlatformAdmin();
+        allow create, update: if isHR(orgId);
+        allow delete: if false;
+      }
+
+      match /manualAdjustments/{adjustmentId} {
+        allow read: if canOperate(orgId);
+        allow write: if false;
+      }
+
+      match /deviceIdentities/{identityId} {
+        allow read: if isHR(orgId);
+        allow write: if false;
+      }
+
+      match /unmappedIdentities/{identityId} {
+        allow read: if isHR(orgId);
+        allow write: if false;
+      }
+
+      match /identityMappingAudits/{auditId} {
+        allow read: if isHR(orgId);
+        allow write: if false;
+      }
+
+      match /shiftChangeAudits/{auditId} {
+        allow read: if isHR(orgId);
+        allow write: if false;
+      }
+
+      match /shiftAssignmentAudits/{auditId} {
+        allow read: if isHR(orgId);
+        allow write: if false;
+      }
+
+      match /adjustmentAudits/{auditId} {
+        allow read: if isHR(orgId);
+        allow write: if false;
+      }
+
+      match /recalculationJobs/{jobId} {
+        allow read: if isHR(orgId);
+        allow write: if false;
+      }
+
+      match /reports/{reportId} {
+        allow read: if isMember(orgId) || isPlatformAdmin();
+        allow write: if false;
+      }
+
+      match /settings/{settingId} {
+        allow read: if isHR(orgId);
+        allow create, update: if hasRole(orgId, ['organizationOwner']);
+        allow delete: if false;
+      }
+
+      match /{document=**} {
+        allow read, write: if false;
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

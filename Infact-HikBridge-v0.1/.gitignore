@@ -1,0 +1,25 @@
+# Go/build artifacts
+dist/
+*.exe
+coverage.out
+
+# Node/Firebase artifacts
+node_modules/
+.next/
+*.tsbuildinfo
+lib/
+coverage/
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+*.local
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

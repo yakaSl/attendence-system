@@ -1,0 +1,33 @@
+{
+  "service": {
+    "pollIntervalSeconds": 5,
+    "initialLookbackHours": 24,
+    "overlapSeconds": 120,
+    "syncIntervalSeconds": 5,
+    "statusIntervalSeconds": 60,
+    "localStatusAddress": "127.0.0.1:8765",
+    "dataDir": "C:\\ProgramData\\Infact\\HikBridge",
+    "logMaxMegabytes": 20,
+    "logBackups": 5,
+    "syncedRetentionDays": 90
+  },
+  "hikvision": {
+    "deviceId": "office-main-01",
+    "deviceName": "Main Office Attendance",
+    "baseUrl": "http://192.168.1.64",
+    "username": "admin",
+    "password": "CHANGE_ME",
+    "pageSize": 30,
+    "timeZone": "Asia/Colombo",
+    "requestTimeoutSeconds": 12,
+    "retryCount": 2
+  },
+  "cloud": {
+    "enabled": false,
+    "ingestUrl": "https://YOUR_REGION-YOUR_PROJECT.cloudfunctions.net/ingestHikvisionEvents",
+    "bridgeKey": "CHANGE_ME_TO_A_LONG_RANDOM_PER_DEVICE_SECRET",
+    "batchSize": 100,
+    "requestTimeoutSeconds": 15,
+    "allowInsecureHttp": false
+  }
+}

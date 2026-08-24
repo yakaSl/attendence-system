@@ -1,0 +1,20 @@
+{
+  "AcsEvent": {
+    "searchID": "{{SEARCH_ID}}",
+    "totalMatches": 2,
+    "responseStatusStrg": "OK",
+    "numOfMatches": 1,
+    "InfoList": [
+      {
+        "major": 5,
+        "minor": 75,
+        "time": "2026-08-23T17:36:01+05:30",
+        "name": "Kasun Perera",
+        "employeeNoString": "17",
+        "serialNo": 4102,
+        "currentVerifyMode": "fingerPrint",
+        "attendanceStatus": "checkOut"
+      }
+    ]
+  }
+}
