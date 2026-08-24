@@ -11,7 +11,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src test --max-warnings=0",
-    "test": "vitest run test/protocol.test.ts test/ingestion.test.ts test/secret-manager.test.ts test/attendance-engine.test.ts test/onboarding.test.ts",
+    "test": "vitest run test/protocol.test.ts test/ingestion.test.ts test/secret-manager.test.ts test/attendance-engine.test.ts test/shift-inference.test.ts test/onboarding.test.ts",
     "test:emulator": "vitest run test/firestore-repository.emulator.test.ts test/attendance-recalculation.emulator.test.ts test/onboarding.emulator.test.ts"
   },
   "dependencies": {

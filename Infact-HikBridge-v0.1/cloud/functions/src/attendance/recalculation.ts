@@ -9,6 +9,7 @@ import {
 } from "firebase-admin/firestore";
 
 import { calculateAttendance } from "./engine.js";
+import { inferDailyShift, type ShiftInferenceResult } from "./shift-inference.js";
 import type {
   AttendanceCalculationResult,
   AttendancePunch,
@@ -25,6 +26,8 @@ interface RecalculationContext {
   timezone: string;
   branchId: string | null;
   shift: ShiftDefinition | null;
+  shiftSource: "assigned" | "automatic" | "confirmed" | null;
+  inferenceLocked: boolean;
 }
 
 function requiredString(data: DocumentData, field: string, documentPath: string): string {
@@ -179,20 +182,33 @@ async function loadContext(db: Firestore, organizationId: string, employeeId: st
   if (!employee.exists) throw new Error(`Employee ${employeeId} does not exist in organization ${organizationId}`);
   const timezone = requiredString(organizationSnapshot.data() ?? {}, "timezone", organization.path);
   Temporal.Now.zonedDateTimeISO(timezone);
-  const assignments = await organization.collection("shiftAssignments")
-    .where("employeeId", "==", employeeId)
-    .where("effectiveFrom", "<=", date)
-    .orderBy("effectiveFrom", "desc")
-    .limit(20)
-    .get();
+  const [assignments, inference] = await Promise.all([
+    organization.collection("shiftAssignments")
+      .where("employeeId", "==", employeeId)
+      .where("effectiveFrom", "<=", date)
+      .orderBy("effectiveFrom", "desc")
+      .limit(20)
+      .get(),
+    organization.collection("shiftInferences").doc(`${employeeId}_${date}`).get(),
+  ]);
   const activeAssignment = assignments.docs.find((candidate) => {
     const effectiveTo = candidate.get("effectiveTo");
     return effectiveTo === null || effectiveTo === undefined || (typeof effectiveTo === "string" && effectiveTo >= date);
   });
   let shift: ShiftDefinition | null = null;
+  let shiftSource: RecalculationContext["shiftSource"] = null;
+  let inferenceLocked = false;
   if (activeAssignment !== undefined) {
     const shiftId = requiredString(activeAssignment.data(), "shiftId", activeAssignment.ref.path);
     shift = parseShift(await organization.collection("shifts").doc(shiftId).get());
+    shiftSource = "assigned";
+  } else if (inference.exists && inference.get("state") === "confirmed") {
+    const shiftId = requiredString(inference.data() ?? {}, "selectedShiftId", inference.ref.path);
+    shift = parseShift(await organization.collection("shifts").doc(shiftId).get());
+    shiftSource = "confirmed";
+    inferenceLocked = true;
+  } else if (inference.exists && inference.get("state") === "rejected") {
+    inferenceLocked = true;
   }
   return {
     organization,
@@ -200,11 +216,17 @@ async function loadContext(db: Firestore, organizationId: string, employeeId: st
     timezone,
     branchId: optionalString(employee.data() ?? {}, "branchId"),
     shift,
+    shiftSource,
+    inferenceLocked,
   };
 }
 
-async function loadPunches(context: RecalculationContext, employeeId: string, date: string): Promise<AttendancePunch[]> {
-  const range = dateRange(date, context.timezone, context.shift);
+async function loadPunchesBetween(
+  context: RecalculationContext,
+  employeeId: string,
+  date: string,
+  range: { start: Date; end: Date },
+): Promise<AttendancePunch[]> {
   const events = context.organization.collection("attendanceEvents");
   const directQuery = events.where("employeeId", "==", employeeId)
     .where("eventTime", ">=", Timestamp.fromDate(range.start))
@@ -239,6 +261,57 @@ async function loadPunches(context: RecalculationContext, employeeId: string, da
     }
   }
   return [...byId.values()];
+}
+
+async function loadPunches(context: RecalculationContext, employeeId: string, date: string): Promise<AttendancePunch[]> {
+  return loadPunchesBetween(context, employeeId, date, dateRange(date, context.timezone, context.shift));
+}
+
+async function inferShift(
+  context: RecalculationContext,
+  employeeId: string,
+  date: string,
+): Promise<ShiftInferenceResult | null> {
+  if (context.shift !== null || context.inferenceLocked) return null;
+  const plainDate = Temporal.PlainDate.from(date);
+  const start = plainDate.toZonedDateTime({ timeZone: context.timezone, plainTime: "00:00" })
+    .subtract({ hours: 6 }).toInstant();
+  const end = plainDate.add({ days: 1 }).toZonedDateTime({ timeZone: context.timezone, plainTime: "00:00" })
+    .add({ hours: 6 }).toInstant();
+  const [punches, shiftSnapshots] = await Promise.all([
+    loadPunchesBetween(context, employeeId, date, {
+      start: new Date(Number(start.epochMilliseconds)),
+      end: new Date(Number(end.epochMilliseconds)),
+    }),
+    context.organization.collection("shifts").where("active", "==", true).limit(200).get(),
+  ]);
+  const shifts = shiftSnapshots.docs.map(parseShift);
+  const inference = inferDailyShift({ date, timezone: context.timezone, shifts, punches });
+  const reference = context.organization.collection("shiftInferences").doc(`${employeeId}_${date}`);
+  const employee = context.employee.data() ?? {};
+  const state = inference.confidence === "high" ? "auto_applied" :
+    inference.confidence === "none" ? "no_match" : "review_required";
+  await reference.set({
+    organizationId: context.organization.id,
+    employeeId,
+    employeeCode: optionalString(employee, "employeeCode") ?? employeeId,
+    employeeName: optionalString(employee, "name") ?? employeeId,
+    branchId: context.branchId,
+    date,
+    state,
+    confidence: inference.confidence,
+    suggestedShiftId: inference.suggestedShiftId,
+    selectedShiftId: state === "auto_applied" ? inference.suggestedShiftId : null,
+    explanation: inference.explanation,
+    candidates: inference.candidates,
+    firstPunchAt: inference.candidates[0]?.punchAt ?? null,
+    updatedAt: Timestamp.now(),
+  }, { merge: true });
+  if (state === "auto_applied" && inference.suggestedShiftId !== null) {
+    context.shift = shifts.find((shift) => shift.id === inference.suggestedShiftId) ?? null;
+    context.shiftSource = context.shift === null ? null : "automatic";
+  }
+  return inference;
 }
 
 async function loadHoliday(context: RecalculationContext, date: string): Promise<{ id: string; name: string } | null> {
@@ -299,6 +372,7 @@ export async function recalculateAttendance(
   date: string,
 ): Promise<AttendanceCalculationResult> {
   const context = await loadContext(db, organizationId, employeeId, date);
+  const inference = await inferShift(context, employeeId, date);
   const [punches, holiday, leave, approvedAdjustments] = await Promise.all([
     loadPunches(context, employeeId, date),
     loadHoliday(context, date),
@@ -316,7 +390,11 @@ export async function recalculateAttendance(
     leave,
     approvedAdjustments,
   });
-  await context.organization.collection("attendanceDays").doc(`${employeeId}_${date}`).set(firestoreProjection(result));
+  await context.organization.collection("attendanceDays").doc(`${employeeId}_${date}`).set({
+    ...firestoreProjection(result),
+    shiftSource: context.shiftSource,
+    shiftInferenceConfidence: inference?.confidence ?? null,
+  });
   return result;
 }
 

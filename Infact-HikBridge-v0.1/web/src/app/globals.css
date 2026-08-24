@@ -280,6 +280,20 @@ textarea { min-height: 82px; resize: vertical; }
 .shift-list { display: flex; flex-direction: column; }
 .shift-row { display: grid; grid-template-columns: minmax(180px, 1.3fr) 130px minmax(150px, 1fr) minmax(165px, 1fr) 150px auto auto; align-items: center; gap: 16px; min-height: 76px; padding: 12px 16px; border-bottom: 1px solid #edf0ef; }
 .shift-row:last-child { border-bottom: 0; }
+.schedule-cell { display: inline-flex; flex-direction: column; gap: 3px; }
+.schedule-cell small { color: var(--teal); font-family: inherit; font-size: 8px; font-weight: 650; }
+.confidence-badge { display: inline-flex; min-width: 54px; justify-content: center; padding: 4px 7px; border-radius: 999px; background: var(--amber-soft); color: #986000; font-size: 8px; font-weight: 700; text-transform: capitalize; }
+.confidence-badge[data-confidence="low"] { background: var(--red-soft); color: var(--red); }
+.inference-evidence { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 12px; padding: 12px; border-left: 2px solid #d89b2b; background: var(--amber-soft); color: #725019; }
+.inference-evidence svg { flex: 0 0 auto; margin-top: 1px; }
+.inference-evidence strong, .inference-evidence small { display: block; line-height: 1.45; }
+.inference-evidence strong { font-size: 10px; }
+.inference-evidence small { margin-top: 4px; color: #8c6b34; font-size: 8px; }
+.candidate-list { display: flex; gap: 7px; margin-bottom: 16px; overflow-x: auto; }
+.candidate-list > span { display: flex; min-width: 130px; flex-direction: column; padding: 9px 10px; border: 1px solid var(--line); border-radius: 7px; }
+.candidate-list strong { font-size: 9px; }
+.candidate-list small { margin-top: 3px; color: var(--muted); font-size: 8px; }
+.form-actions-split > span { flex: 1; }
 .shift-title { display: flex; align-items: center; gap: 10px; }
 .shift-icon { display: grid; width: 34px; height: 34px; place-items: center; border-radius: 8px; background: var(--teal-soft); color: var(--teal); }
 .shift-title strong, .shift-time strong, .shift-policy strong { display: block; font-size: 10px; font-weight: 650; }

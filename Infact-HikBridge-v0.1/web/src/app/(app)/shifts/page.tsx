@@ -1,37 +1,73 @@
 "use client";
 
-import { CalendarPlus, Clock3, Moon, PencilLine, UserPlus } from "lucide-react";
-import { useCallback, useState, type FormEvent } from "react";
+import { AlertTriangle, CalendarPlus, Check, Clock3, Moon, PencilLine, UserPlus, X } from "lucide-react";
+import { useCallback, useMemo, useState, type FormEvent } from "react";
 
+import { SortableHeader } from "@/components/sortable-header";
 import { Button, EmptyState, ErrorState, LoadingState, Modal, PageHeader, Panel, RoleGate, StatusBadge } from "@/components/ui";
 import { useAuth } from "@/lib/auth/auth-provider";
 import { useData } from "@/lib/data/data-provider";
-import type { Employee, Shift } from "@/lib/data/types";
-import { assignEmployeeShift, saveShift } from "@/lib/firebase/actions";
-import { formatMinutes, todayKey } from "@/lib/format";
+import type { Employee, Shift, ShiftInference } from "@/lib/data/types";
+import { assignEmployeeShift, resolveShiftInference, saveShift } from "@/lib/firebase/actions";
+import { formatDate, formatMinutes, todayKey } from "@/lib/format";
+import { nextSort, sortRows, type SortState } from "@/lib/sorting";
 import { useAsyncData } from "@/lib/use-async-data";
 
-interface ShiftData { shifts: Shift[]; employees: Employee[] }
+interface ShiftData { shifts: Shift[]; employees: Employee[]; inferences: ShiftInference[] }
+type ReviewSort = "date" | "employee" | "punch" | "shift" | "confidence";
 const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 export default function ShiftsPage() {
   const { user } = useAuth();
   const { repository, organization } = useData();
   const date = todayKey(organization?.timezone);
+  const canManage = user !== null && ["organizationOwner", "hrAdmin", "platformAdmin"].includes(user.role);
   const load = useCallback(async (): Promise<ShiftData> => {
     const organizationId = user?.organizationId ?? "";
-    const [shifts, employees] = await Promise.all([repository.getShifts(organizationId), repository.getEmployees(organizationId, date)]);
-    return { shifts, employees };
-  }, [date, repository, user?.organizationId]);
+    const [shifts, employees, inferences] = await Promise.all([
+      repository.getShifts(organizationId),
+      repository.getEmployees(organizationId, date),
+      canManage ? repository.getShiftInferences(organizationId) : Promise.resolve([]),
+    ]);
+    return { shifts, employees, inferences };
+  }, [canManage, date, repository, user?.organizationId]);
   const { data, loading, error, refresh } = useAsyncData(load);
   const [editing, setEditing] = useState<Shift | "new" | null>(null);
   const [assigning, setAssigning] = useState(false);
-  const canManage = user !== null && ["organizationOwner", "hrAdmin", "platformAdmin"].includes(user.role);
+  const [reviewing, setReviewing] = useState<ShiftInference | null>(null);
+  const [reviewSort, setReviewSort] = useState<SortState<ReviewSort>>({ key: "date", direction: "desc" });
+  const reviewRows = useMemo(() => sortRows(data?.inferences ?? [], reviewSort, {
+    date: (inference) => inference.date,
+    employee: (inference) => inference.employeeName,
+    punch: (inference) => inference.firstPunchAt,
+    shift: (inference) => inference.suggestedShiftId,
+    confidence: (inference) => inference.confidence,
+  }), [data?.inferences, reviewSort]);
 
   return (
     <>
       <PageHeader eyebrow="Work schedules" title="Shifts" description="Define attendance policy once, including overnight boundaries, then assign it over explicit historical date ranges." actions={canManage ? <><Button variant="secondary" onClick={() => setAssigning(true)}><UserPlus size={14} />Assign shift</Button><Button onClick={() => setEditing("new")}><CalendarPlus size={14} />New shift</Button></> : undefined} />
       <div className="policy-note"><Clock3 size={16} /><span><strong>Historical behavior is preserved by date-ranged assignments.</strong> Editing a shift creates an audit record and queues controlled recalculation from the selected date.</span></div>
+      {canManage ? <Panel title="Shift review" description={`${reviewRows.length} ambiguous punch match${reviewRows.length === 1 ? "" : "es"} waiting for HR`}>
+        {loading ? <LoadingState label="Loading shift suggestions" /> : error ? <ErrorState message={error} /> : reviewRows.length === 0 ? <EmptyState title="No shift decisions needed" message="Clear matches are applied only to their attendance day. Ambiguous punches will appear here." /> : <div className="table-wrap"><table className="data-table responsive-table"><thead><tr>
+          <SortableHeader column="date" label="Date" sort={reviewSort} onSort={(key) => setReviewSort((current) => nextSort(current, key))} />
+          <SortableHeader column="employee" label="Employee" sort={reviewSort} onSort={(key) => setReviewSort((current) => nextSort(current, key))} />
+          <SortableHeader column="punch" label="First punch" sort={reviewSort} onSort={(key) => setReviewSort((current) => nextSort(current, key))} />
+          <SortableHeader column="shift" label="Suggested shift" sort={reviewSort} onSort={(key) => setReviewSort((current) => nextSort(current, key))} />
+          <SortableHeader column="confidence" label="Confidence" sort={reviewSort} onSort={(key) => setReviewSort((current) => nextSort(current, key))} />
+          <th aria-label="Review" />
+        </tr></thead><tbody>{reviewRows.map((inference) => {
+          const shift = data?.shifts.find((candidate) => candidate.id === inference.suggestedShiftId);
+          return <tr key={inference.id}>
+            <td data-label="Date" className="numeric">{formatDate(inference.date)}</td>
+            <td data-label="Employee" data-primary="true"><span className="cell-copy"><strong>{inference.employeeName}</strong><small>{inference.employeeCode}</small></span></td>
+            <td data-label="First punch" className="numeric">{formatPunchTime(inference.firstPunchAt, organization?.timezone)}</td>
+            <td data-label="Suggested shift"><span className="cell-copy"><strong>{shift?.name ?? inference.suggestedShiftId ?? "No clear match"}</strong><small>{shift ? `${shift.startTime}–${shift.endTime}` : "Review candidates"}</small></span></td>
+            <td data-label="Confidence"><span className="confidence-badge" data-confidence={inference.confidence}>{inference.confidence}</span></td>
+            <td data-action="true"><Button variant="secondary" onClick={() => setReviewing(inference)}>Review</Button></td>
+          </tr>;
+        })}</tbody></table></div>}
+      </Panel> : null}
       <Panel title="Shift policies" description={`${data?.shifts.length ?? 0} configured schedules`}>
         {loading ? <LoadingState label="Loading shifts" /> : error ? <ErrorState message={error} /> : !data || data.shifts.length === 0 ? <EmptyState title="No shifts configured" message="Create the first work schedule before assigning employees." /> : (
           <div className="shift-list">{data.shifts.map((shift) => {
@@ -51,9 +87,62 @@ export default function ShiftsPage() {
       <RoleGate role={user?.role ?? "viewer"} allowed={["organizationOwner", "hrAdmin"]}>
         <ShiftModal shift={editing} organizationId={user?.organizationId ?? ""} today={date} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); refresh(); }} />
         <AssignmentModal open={assigning} shifts={data?.shifts ?? []} employees={data?.employees ?? []} organizationId={user?.organizationId ?? ""} today={date} onClose={() => setAssigning(false)} onSaved={() => { setAssigning(false); refresh(); }} />
+        <ShiftReviewModal key={reviewing?.id ?? "closed"} inference={reviewing} shifts={data?.shifts ?? []} organizationId={user?.organizationId ?? ""} timezone={organization?.timezone ?? "Asia/Colombo"} onClose={() => setReviewing(null)} onResolved={() => { setReviewing(null); refresh(); }} />
       </RoleGate>
     </>
   );
+}
+
+function formatPunchTime(value: string | null, timezone = "Asia/Colombo"): string {
+  if (value === null) return "—";
+  return new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: timezone }).format(new Date(value));
+}
+
+function ShiftReviewModal({ inference, shifts, organizationId, timezone, onClose, onResolved }: {
+  inference: ShiftInference | null;
+  shifts: Shift[];
+  organizationId: string;
+  timezone: string;
+  onClose(): void;
+  onResolved(): void;
+}) {
+  const [shiftId, setShiftId] = useState(inference?.suggestedShiftId ?? "");
+  const [reason, setReason] = useState("Confirmed from employee punch evidence");
+  const [submitting, setSubmitting] = useState<"confirm" | "reject" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function resolve(decision: "confirm" | "reject") {
+    if (inference === null) return;
+    setSubmitting(decision);
+    setError(null);
+    try {
+      await resolveShiftInference({
+        organizationId,
+        inferenceId: inference.id,
+        decision,
+        shiftId: decision === "confirm" ? shiftId || null : null,
+        reason,
+      });
+      onResolved();
+    } catch (resolveError) {
+      setError(resolveError instanceof Error ? resolveError.message : "Shift suggestion could not be resolved");
+    } finally {
+      setSubmitting(null);
+    }
+  }
+
+  return <Modal open={inference !== null} title="Review shift match" description={inference ? `${inference.employeeCode} · ${inference.employeeName} · ${formatDate(inference.date)}` : ""} onClose={onClose}>
+    {inference ? <form className="modal-content" onSubmit={(event) => { event.preventDefault(); void resolve("confirm"); }}>
+      {error ? <ErrorState message={error} /> : null}
+      <div className="inference-evidence"><AlertTriangle size={18} /><div><strong>{inference.explanation}</strong><small>First punch {formatPunchTime(inference.firstPunchAt, timezone)} · {inference.confidence} confidence</small></div></div>
+      <div className="candidate-list">{inference.candidates.map((candidate) => <span key={candidate.shiftId}><strong>{candidate.shiftName}</strong><small>{candidate.startTime} · {candidate.distanceMinutes} min away</small></span>)}</div>
+      <div className="form-grid">
+        <div className="form-field form-field-full"><label htmlFor="review-shift">Shift for this day</label><select id="review-shift" required autoFocus value={shiftId} onChange={(event) => setShiftId(event.target.value)}><option value="">Select shift</option>{shifts.filter((shift) => shift.active).map((shift) => <option key={shift.id} value={shift.id}>{shift.name} · {shift.startTime}–{shift.endTime}</option>)}</select><small>Confirmation applies only to this attendance date and does not create a permanent assignment.</small></div>
+        <div className="form-field form-field-full"><label htmlFor="review-reason">Decision reason</label><textarea id="review-reason" required minLength={3} maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} /></div>
+      </div>
+      <div className="form-actions form-actions-split"><Button type="button" variant="quiet" disabled={submitting !== null || reason.trim().length < 3} onClick={() => void resolve("reject")}><X size={14} />{submitting === "reject" ? "Rejecting…" : "Not a scheduled shift"}</Button><span /><Button type="button" variant="secondary" onClick={onClose}>Cancel</Button><Button type="submit" disabled={submitting !== null || shiftId === "" || reason.trim().length < 3}><Check size={14} />{submitting === "confirm" ? "Confirming…" : "Confirm shift"}</Button></div>
+    </form> : null}
+  </Modal>;
 }
 
 const emptyShift: Shift = {

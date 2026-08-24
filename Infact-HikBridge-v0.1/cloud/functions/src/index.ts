@@ -25,6 +25,7 @@ import { IngestionService } from "./ingest/service.js";
 import { MAX_BODY_BYTES, type HeaderSource } from "./ingest/types.js";
 import { bootstrapOrganization } from "./onboarding/bootstrap.js";
 import { assignEmployeeShift, saveShift } from "./shifts/management.js";
+import { resolveShiftInference } from "./shifts/inference-management.js";
 
 const ingestion = new IngestionService(
   new FirestoreIngestRepository(firestore),
@@ -109,6 +110,7 @@ export {
   recalculateLeaveChange,
   recalculateNewAttendanceEvent,
   rotateDeviceCredential,
+  resolveShiftInference,
   saveShift,
   setDeviceEnabled,
   updateEmployeeDepartment,

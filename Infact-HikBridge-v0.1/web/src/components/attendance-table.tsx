@@ -53,7 +53,7 @@ export function AttendanceTable({ days, showEmployee = true, onCorrect }: {
           <tr key={day.id}>
             <td data-label="Date" data-primary={!showEmployee || undefined}><span className="numeric">{formatDate(day.date, { day: "2-digit", month: "short" })}</span>{day.hasManualAdjustment ? <span className="adjusted-mark" title="Contains a manual adjustment"><CircleDot size={11} />Adjusted</span> : null}</td>
             {showEmployee ? <td data-label="Employee" data-primary="true"><Link href={`/employees/${day.employeeId}`} className="cell-main"><span className="cell-avatar">{initials(day.employeeName)}</span><span className="cell-copy"><strong>{day.employeeName}</strong><small>{day.employeeCode} · {day.departmentName}</small></span></Link></td> : null}
-            <td data-label="Scheduled" className="numeric muted">{day.scheduledIn && day.scheduledOut ? `${day.scheduledIn}–${day.scheduledOut}` : "—"}</td>
+            <td data-label="Scheduled" className="numeric muted"><span className="schedule-cell">{day.scheduledIn && day.scheduledOut ? `${day.scheduledIn}–${day.scheduledOut}` : "—"}{day.shiftSource === "automatic" ? <small>Auto-detected</small> : day.shiftSource === "confirmed" ? <small>HR confirmed</small> : null}</span></td>
             <td data-label="First in" className="numeric">{day.firstIn ?? "—"}</td>
             <td data-label="Last out" className="numeric">{day.lastOut ?? "—"}</td>
             <td data-label="Worked" className="numeric">{formatMinutes(day.workedMinutes, true)}</td>

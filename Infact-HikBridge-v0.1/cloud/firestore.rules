@@ -326,6 +326,16 @@ service cloud.firestore {
         allow write: if false;
       }
 
+      match /shiftInferences/{inferenceId} {
+        allow read: if isHR(orgId);
+        allow write: if false;
+      }
+
+      match /shiftInferenceAudits/{auditId} {
+        allow read: if isHR(orgId);
+        allow write: if false;
+      }
+
       match /adjustmentAudits/{auditId} {
         allow read: if isHR(orgId);
         allow write: if false;

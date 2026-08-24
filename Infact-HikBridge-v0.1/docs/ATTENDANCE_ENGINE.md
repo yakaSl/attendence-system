@@ -17,6 +17,8 @@ Raw documents in `attendanceEvents` are never updated or deleted by attendance p
 
 Historical shift assignment uses the newest assignment whose `effectiveFrom <= date` and whose optional `effectiveTo >= date`. Employee documents do not carry an overwritten current-shift truth.
 
+When no explicit assignment exists, active shifts scheduled for that weekday are compared with the first eligible non-checkout punch. A match within 60 minutes of shift start is applied only to that attendance day when it is at least 45 minutes more likely than the next candidate. Wider or ambiguous matches do not calculate shift-based late, early-leave, or overtime values until HR confirms them in `shiftInferences/{employeeId}_{date}`. Explicit assignments always override inferred or confirmed daily decisions.
+
 ## Punch selection
 
 `first_last` mode uses the earliest and latest effective in-window punches. Consecutive untyped punches no more than 60 seconds apart form one effective punch cluster, preventing a repeated arrival scan from becoming a false checkout. One effective untyped punch is a check-in with a `missing_check_out` exception. An explicitly typed checkout-only punch produces `missing_check_in`.

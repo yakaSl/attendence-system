@@ -50,6 +50,8 @@ async function seed(): Promise<void> {
     await setDoc(doc(db, "organizations/org-a/employeeCreationAudits/audit-1"), { employeeId: "employee-1" });
     await setDoc(doc(db, "organizations/org-a/employeeDepartmentChangeAudits/audit-1"), { employeeId: "employee-1" });
     await setDoc(doc(db, "organizations/org-a/departments/operations"), { name: "Operations" });
+    await setDoc(doc(db, "organizations/org-a/shiftInferences/employee-1_2026-08-24"), { employeeId: "employee-1", state: "review_required" });
+    await setDoc(doc(db, "organizations/org-a/shiftInferenceAudits/audit-1"), { employeeId: "employee-1" });
     await setDoc(doc(db, "organizations/org-a/shifts/NORMAL"), { name: "Normal Shift" });
     await setDoc(doc(db, "bridgeDeviceRegistry/device-1"), { secretVersionNames: ["secret"] });
     await setDoc(doc(db, "_bridgeCredentials/device-1"), { secret: "must-never-be-readable" });
@@ -191,6 +193,17 @@ describe("Firestore tenant and role isolation", () => {
     await assertFails(getDoc(doc(platform, "organizations/org-a/devices/device-1/commandLocks/fingerprint")));
     await assertFails(getDoc(doc(hr, "organizations/org-a/employeeCodeRegistry/code-1")));
     await assertFails(setDoc(doc(hr, "organizations/org-a/deviceEnrollments/direct"), { state: "enrolled" }));
+  });
+
+  it("restricts shift suggestions and their audits to HR read-only access", async () => {
+    await seed();
+    const hr = environment.authenticatedContext("hr-a").firestore();
+    const manager = environment.authenticatedContext("manager-a").firestore();
+    const inference = doc(hr, "organizations/org-a/shiftInferences/employee-1_2026-08-24");
+    await assertSucceeds(getDoc(inference));
+    await assertSucceeds(getDoc(doc(hr, "organizations/org-a/shiftInferenceAudits/audit-1")));
+    await assertFails(getDoc(doc(manager, "organizations/org-a/shiftInferences/employee-1_2026-08-24")));
+    await assertFails(updateDoc(inference, { state: "confirmed" }));
   });
 
   it("prevents every browser role from creating or mutating raw events", async () => {

@@ -211,6 +211,10 @@ Employee, shift, `effectiveFrom`, optional `effectiveTo`, source/reason, actor, 
 
 Server-created before/after policy changes and immutable assignment actions with reason, actor, and timestamp. Browser reads are HR-only and browser writes are denied.
 
+### `shiftInferences/{employeeId}_{date}`
+
+Daily derived shift suggestion for an employee without an explicit assignment. High-confidence matches are applied only to that attendance day. Medium and ambiguous matches remain `review_required` until HR confirms or rejects them. Resolutions are stored in `shiftInferenceAudits/{auditId}` and trigger deterministic attendance recalculation.
+
 ### `holidays/{holidayId}`
 
 Local date or date range, branch scope, name, working/non-working behavior, and audit fields.

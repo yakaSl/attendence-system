@@ -8,6 +8,7 @@ import {
   updateEmployeeDepartmentSchema,
 } from "../src/employees/management.js";
 import { bootstrapOrganizationSchema } from "../src/onboarding/bootstrap.js";
+import { resolveShiftInferenceSchema } from "../src/shifts/inference-management.js";
 
 const valid = {
   organizationId: "northwind-labs",
@@ -131,6 +132,32 @@ describe("employee and fingerprint enrollment input", () => {
       employeeId: "employee-1",
       departmentId: null,
       reason: "",
+    }).success).toBe(false);
+  });
+});
+
+describe("shift inference review input", () => {
+  it("requires a shift for confirmation but not rejection", () => {
+    expect(resolveShiftInferenceSchema.parse({
+      organizationId: "northwind-labs",
+      inferenceId: "employee-1_2026-08-24",
+      decision: "confirm",
+      shiftId: "MORNING",
+      reason: "Confirmed from punch evidence",
+    }).shiftId).toBe("MORNING");
+    expect(resolveShiftInferenceSchema.parse({
+      organizationId: "northwind-labs",
+      inferenceId: "employee-1_2026-08-24",
+      decision: "reject",
+      shiftId: null,
+      reason: "This was an overtime visit",
+    }).decision).toBe("reject");
+    expect(resolveShiftInferenceSchema.safeParse({
+      organizationId: "northwind-labs",
+      inferenceId: "employee-1_2026-08-24",
+      decision: "confirm",
+      shiftId: null,
+      reason: "Missing selection",
     }).success).toBe(false);
   });
 });
