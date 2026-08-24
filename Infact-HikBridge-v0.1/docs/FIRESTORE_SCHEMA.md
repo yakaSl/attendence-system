@@ -128,6 +128,16 @@ Browser-readable operational projection, never credentials:
 
 The document ID is a cloud identity, not a Hikvision employee number.
 
+`employeeCodeRegistry/{sha256(lowercaseEmployeeCode)}` prevents concurrent duplicate employee codes. `employeeCreationAudits/{auditId}` records the actor and created identity. `employeeDepartmentChangeAudits/{auditId}` records the previous department, new department, reason, and actor for every reassignment. All are server-written; the registry is browser-inaccessible and audits are HR-readable.
+
+### `devices/{deviceId}/commands/{commandId}`
+
+Server-only short-lived commands for the HMAC-authenticated bridge. A command stores type (`upsert_user` or `enroll_fingerprint`), employee identity fields, optional finger slot, state, lease/expiry timestamps, bounded result metadata, and audit fields. Fingerprint templates are prohibited. `devices/{deviceId}/commandLocks/fingerprint` permits only one active capture prompt per terminal.
+
+### `deviceEnrollments/{sha256(deviceId + employeeNo)}`
+
+HR-readable projection of user synchronization/fingerprint enrollment state. It contains device/employee IDs, employee number, state, finger slot, optional terminal-reported quality, safe last error, and timestamps. It never contains `fingerData`.
+
 ### `deviceIdentities/{sha256(deviceId + employeeNo)}`
 
 ```typescript
@@ -219,7 +229,7 @@ Immutable old calculated state, adjustment snapshot, resulting calculated state,
 
 ### `attendanceDays/{employeeId_date}`
 
-Derived, replaceable projection containing organization timezone; shift and local work date; local and instant schedule/check-in/check-out values; worked/late/early/overtime minutes; status; holiday/leave references; exception flags; source event IDs; adjustment IDs; `attendance-v1` calculation version; and `calculatedAt`. See `ATTENDANCE_ENGINE.md` for formulas and precedence.
+Derived, replaceable projection containing organization timezone; shift and local work date; local and instant schedule/check-in/check-out values; worked/late/early/overtime minutes; status; holiday/leave references; exception flags; source event IDs; adjustment IDs; `attendance-v2` calculation version; and `calculatedAt`. See `ATTENDANCE_ENGINE.md` for formulas and precedence.
 
 ### `recalculationJobs/{jobId}`
 

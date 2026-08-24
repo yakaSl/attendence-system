@@ -52,6 +52,10 @@ function secretId(deviceId: string): string {
   return `hikbridge-${digest}`;
 }
 
+function isAlreadyExists(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === 6;
+}
+
 export class DeviceProvisioningService {
   constructor(
     private readonly db: Firestore,
@@ -71,6 +75,7 @@ export class DeviceProvisioningService {
     const device = organization.collection("devices").doc(input.localDeviceId);
     const reservation = randomUUID();
     const now = Timestamp.now();
+    let retryingFailedProvision = false;
 
     await this.db.runTransaction(async (transaction) => {
       const [organizationSnapshot, branchSnapshot, registrySnapshot] = await transaction.getAll(organization, branch, registry);
@@ -80,10 +85,13 @@ export class DeviceProvisioningService {
       if (!organizationSnapshot.exists || !branchSnapshot.exists) {
         throw new HttpsError("not-found", "Organization or branch does not exist");
       }
-      if (registrySnapshot.exists) {
+      if (registrySnapshot.exists && (
+        registrySnapshot.get("state") !== "provisioning_failed" ||
+        registrySnapshot.get("organizationId") !== input.organizationId
+      )) {
         throw new HttpsError("already-exists", "This bridge device ID is already registered");
       }
-      transaction.create(registry, {
+      const reservationData = {
         state: "provisioning",
         reservation,
         organizationId: input.organizationId,
@@ -92,25 +100,38 @@ export class DeviceProvisioningService {
         enabled: false,
         createdAt: now,
         createdBy: authContext.uid,
-      });
+      };
+      if (registrySnapshot.exists) {
+        retryingFailedProvision = true;
+        transaction.set(registry, reservationData);
+      } else {
+        transaction.create(registry, reservationData);
+      }
     });
 
     const bridgeKey = randomBytes(32).toString("base64url");
     const secretManagerId = secretId(input.localDeviceId);
+    const secretResourceName = `projects/${projectId()}/secrets/${secretManagerId}`;
     try {
-      const [secret] = await this.secrets.createSecret({
-        parent: `projects/${projectId()}`,
-        secretId: secretManagerId,
-        secret: {
-          replication: { automatic: {} },
-          labels: { application: "infact-hikbridge" },
-        },
-      });
-      if (secret.name === undefined || secret.name === null || secret.name === "") {
-        throw new Error("Secret Manager did not return a secret resource name");
+      let createdSecretName = secretResourceName;
+      try {
+        const [secret] = await this.secrets.createSecret({
+          parent: `projects/${projectId()}`,
+          secretId: secretManagerId,
+          secret: {
+            replication: { automatic: {} },
+            labels: { application: "infact-hikbridge" },
+          },
+        });
+        if (secret.name === undefined || secret.name === null || secret.name === "") {
+          throw new Error("Secret Manager did not return a secret resource name");
+        }
+        createdSecretName = secret.name;
+      } catch (error) {
+        if (!retryingFailedProvision || !isAlreadyExists(error)) throw error;
       }
       const [version] = await this.secrets.addSecretVersion({
-        parent: secret.name,
+        parent: createdSecretName,
         payload: { data: Buffer.from(bridgeKey, "utf8") },
       });
       if (version.name === undefined || version.name === null || version.name === "") {
@@ -138,7 +159,7 @@ export class DeviceProvisioningService {
         transaction.update(registry, {
           state: "active",
           enabled: true,
-          secretResourceName: secret.name,
+          secretResourceName: createdSecretName,
           secretVersionNames: [version.name],
           activatedAt: now,
           reservation: null,
@@ -230,10 +251,18 @@ export class DeviceProvisioningService {
 
 const provisioningService = new DeviceProvisioningService(firestore, new SecretManagerServiceClient());
 
-export const provisionDevice = onCall({ region }, async (request) => {
-  const auth = requireAuthentication(request.auth as AuthContext | undefined);
-  return provisioningService.provision(request.data, auth);
-});
+export const provisionDevice = Object.assign(
+  onCall({ region }, async (request) => {
+    const auth = requireAuthentication(request.auth as AuthContext | undefined);
+    return provisioningService.provision(request.data, auth);
+  }),
+  {
+    __requiredAPIs: [{
+      api: "secretmanager.googleapis.com",
+      reason: "Stores and verifies HikBridge device credentials",
+    }],
+  },
+);
 
 export const rotateDeviceCredential = onCall({ region }, async (request) => {
   const auth = requireAuthentication(request.auth as AuthContext | undefined);

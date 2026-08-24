@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -22,6 +23,9 @@ import (
 )
 
 const ProtocolVersion = "1"
+
+var commandIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+var commandResultCodePattern = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 
 type Options struct {
 	URL               string
@@ -48,7 +52,9 @@ type requestPayload struct {
 	RequestID       string                  `json:"requestId"`
 	DeviceID        string                  `json:"deviceId"`
 	Probe           bool                    `json:"probe,omitempty"`
+	AcceptCommands  bool                    `json:"acceptCommands,omitempty"`
 	Status          *BridgeStatus           `json:"status,omitempty"`
+	CommandResults  []model.CommandResult   `json:"commandResults,omitempty"`
 	Events          []model.AttendanceEvent `json:"events"`
 }
 
@@ -68,14 +74,16 @@ type RejectedEvent struct {
 }
 
 type Response struct {
-	ProtocolVersion string          `json:"protocolVersion"`
-	RequestID       string          `json:"requestId"`
-	DeviceID        string          `json:"deviceId"`
-	OrganizationID  string          `json:"organizationId,omitempty"`
-	BranchID        string          `json:"branchId,omitempty"`
-	Accepted        []string        `json:"accepted"`
-	Duplicates      []string        `json:"duplicates"`
-	Rejected        []RejectedEvent `json:"rejected"`
+	ProtocolVersion        string                `json:"protocolVersion"`
+	RequestID              string                `json:"requestId"`
+	DeviceID               string                `json:"deviceId"`
+	OrganizationID         string                `json:"organizationId,omitempty"`
+	BranchID               string                `json:"branchId,omitempty"`
+	Accepted               []string              `json:"accepted"`
+	Duplicates             []string              `json:"duplicates"`
+	Rejected               []RejectedEvent       `json:"rejected"`
+	Commands               []model.DeviceCommand `json:"commands"`
+	AcknowledgedCommandIDs []string              `json:"acknowledgedCommandIds"`
 }
 
 type APIError struct {
@@ -169,21 +177,48 @@ func (c *Client) Send(ctx context.Context, events []model.AttendanceEvent) (Resp
 	if len(events) == 0 {
 		return Response{}, errors.New("cannot upload an empty event batch")
 	}
-	return c.send(ctx, false, events, nil)
+	return c.send(ctx, false, events, nil, false, nil)
 }
 
 func (c *Client) Probe(ctx context.Context) (Response, error) {
-	return c.send(ctx, true, []model.AttendanceEvent{}, nil)
+	return c.send(ctx, true, []model.AttendanceEvent{}, nil, false, nil)
 }
 
 func (c *Client) ReportStatus(ctx context.Context, status BridgeStatus) (Response, error) {
 	if status.PendingEvents < 0 {
 		return Response{}, errors.New("pending event count cannot be negative")
 	}
-	return c.send(ctx, true, []model.AttendanceEvent{}, &status)
+	return c.send(ctx, true, []model.AttendanceEvent{}, &status, false, nil)
 }
 
-func (c *Client) send(ctx context.Context, probe bool, events []model.AttendanceEvent, status *BridgeStatus) (Response, error) {
+func (c *Client) ExchangeCommands(ctx context.Context, results []model.CommandResult) (Response, error) {
+	if len(results) > 20 {
+		return Response{}, errors.New("cannot acknowledge more than 20 command results at once")
+	}
+	seen := make(map[string]struct{}, len(results))
+	for _, result := range results {
+		if !commandIDPattern.MatchString(result.CommandID) || (result.State != "succeeded" && result.State != "failed") {
+			return Response{}, errors.New("command result has an invalid ID or state")
+		}
+		if _, duplicate := seen[result.CommandID]; duplicate {
+			return Response{}, fmt.Errorf("command result repeats ID %s", result.CommandID)
+		}
+		seen[result.CommandID] = struct{}{}
+		if (result.Code != "" && !commandResultCodePattern.MatchString(result.Code)) || len(result.Message) > 500 {
+			return Response{}, fmt.Errorf("command result %s has invalid error details", result.CommandID)
+		}
+	}
+	return c.send(ctx, true, []model.AttendanceEvent{}, nil, true, results)
+}
+
+func (c *Client) send(
+	ctx context.Context,
+	probe bool,
+	events []model.AttendanceEvent,
+	status *BridgeStatus,
+	acceptCommands bool,
+	commandResults []model.CommandResult,
+) (Response, error) {
 	nonce, err := newNonce()
 	if err != nil {
 		return Response{}, err
@@ -193,7 +228,9 @@ func (c *Client) send(ctx context.Context, probe bool, events []model.Attendance
 		RequestID:       nonce,
 		DeviceID:        c.deviceID,
 		Probe:           probe,
+		AcceptCommands:  acceptCommands,
 		Status:          status,
+		CommandResults:  commandResults,
 		Events:          events,
 	}
 	body, err := json.Marshal(payload)
@@ -293,7 +330,52 @@ func validateResponse(response Response, request requestPayload) error {
 		if len(response.Accepted)+len(response.Duplicates)+len(response.Rejected) != 0 {
 			return errors.New("probe response unexpectedly contains event results")
 		}
+		requestedResults := make(map[string]struct{}, len(request.CommandResults))
+		for _, result := range request.CommandResults {
+			if result.CommandID == "" {
+				return errors.New("command result omitted command ID")
+			}
+			requestedResults[result.CommandID] = struct{}{}
+		}
+		acknowledged := make(map[string]struct{}, len(response.AcknowledgedCommandIDs))
+		for _, id := range response.AcknowledgedCommandIDs {
+			if _, exists := requestedResults[id]; !exists {
+				return fmt.Errorf("response acknowledges unknown command result %s", id)
+			}
+			if _, duplicate := acknowledged[id]; duplicate {
+				return fmt.Errorf("response repeats acknowledged command result %s", id)
+			}
+			acknowledged[id] = struct{}{}
+		}
+		if !request.AcceptCommands && len(response.Commands) != 0 {
+			return errors.New("probe response included commands without permission")
+		}
+		if len(response.Commands) > 20 {
+			return errors.New("probe response exceeds command limit")
+		}
+		seenCommands := make(map[string]struct{}, len(response.Commands))
+		for _, command := range response.Commands {
+			if !commandIDPattern.MatchString(command.ID) || (command.Type != model.CommandUpsertUser && command.Type != model.CommandEnrollFingerprint) {
+				return errors.New("probe response contains an invalid command")
+			}
+			if _, duplicate := seenCommands[command.ID]; duplicate {
+				return fmt.Errorf("probe response repeats command %s", command.ID)
+			}
+			seenCommands[command.ID] = struct{}{}
+			if len(command.Payload.EmployeeID) < 1 || len(command.Payload.EmployeeID) > 128 ||
+				len(command.Payload.EmployeeNo) < 1 || len(command.Payload.EmployeeNo) > 32 ||
+				len(command.Payload.Name) < 1 || len(command.Payload.Name) > 128 || command.IssuedAt.IsZero() ||
+				command.ExpiresAt.IsZero() || !command.ExpiresAt.After(command.IssuedAt) {
+				return fmt.Errorf("command %s has an incomplete payload", command.ID)
+			}
+			if command.Type == model.CommandEnrollFingerprint && (command.Payload.FingerPrintID < 1 || command.Payload.FingerPrintID > 10) {
+				return fmt.Errorf("command %s has an invalid fingerprint ID", command.ID)
+			}
+		}
 		return nil
+	}
+	if len(response.Commands) != 0 || len(response.AcknowledgedCommandIDs) != 0 {
+		return errors.New("event acknowledgement unexpectedly contains command data")
 	}
 
 	requested := make(map[string]struct{}, len(request.Events))

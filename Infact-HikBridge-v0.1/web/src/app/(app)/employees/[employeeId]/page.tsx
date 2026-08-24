@@ -1,13 +1,15 @@
 "use client";
 
-import { ArrowLeft, CalendarDays, ChevronLeft, ChevronRight, ClockAlert, Timer, UserCheck, UserMinus } from "lucide-react";
+import { ArrowLeft, CalendarDays, ChevronLeft, ChevronRight, ClockAlert, PencilLine, Timer, UserCheck, UserMinus } from "lucide-react";
 import Link from "next/link";
-import { use, useCallback, useMemo, useState } from "react";
+import { use, useCallback, useMemo, useState, type FormEvent } from "react";
 
 import { AttendanceTable } from "@/components/attendance-table";
-import { Button, ErrorState, LoadingState, Metric, PageHeader, Panel, StatusBadge } from "@/components/ui";
+import { Button, ErrorState, LoadingState, Metric, Modal, PageHeader, Panel, RoleGate, StatusBadge } from "@/components/ui";
 import { useAuth } from "@/lib/auth/auth-provider";
 import { useData } from "@/lib/data/data-provider";
+import type { Department, Employee } from "@/lib/data/types";
+import { updateEmployeeDepartment } from "@/lib/firebase/actions";
 import { formatMinutes, formatMonth, initials, monthKey } from "@/lib/format";
 import { useAsyncData } from "@/lib/use-async-data";
 
@@ -22,11 +24,17 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ emplo
   const { user } = useAuth();
   const { repository, organization } = useData();
   const [month, setMonth] = useState(monthKey(organization?.timezone));
+  const [editingDepartment, setEditingDepartment] = useState(false);
   const load = useCallback(
     () => repository.getEmployeeDetail(user?.organizationId ?? "", employeeId, month),
     [employeeId, month, repository, user?.organizationId],
   );
-  const { data, loading, error } = useAsyncData(load);
+  const loadDepartments = useCallback(
+    () => repository.getDepartments(user?.organizationId ?? ""),
+    [repository, user?.organizationId],
+  );
+  const { data, loading, error, refresh } = useAsyncData(load);
+  const { data: departments, loading: departmentsLoading, error: departmentsError } = useAsyncData(loadDepartments);
   const summary = useMemo(() => {
     const days = data?.days ?? [];
     return {
@@ -49,7 +57,7 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ emplo
             eyebrow="Employee attendance"
             title={data.employee.name}
             description={`${data.employee.employeeCode} · ${data.employee.departmentName} · ${data.employee.branchName}`}
-            actions={<StatusBadge status={data.employee.todayStatus} />}
+            actions={<><StatusBadge status={data.employee.todayStatus} /><RoleGate role={user?.role ?? "viewer"} allowed={["organizationOwner", "hrAdmin"]}><Button variant="secondary" onClick={() => setEditingDepartment(true)}><PencilLine size={14} aria-hidden />Change department</Button></RoleGate></>}
           />
           <section className="employee-profile-strip">
             <span className="profile-avatar">{initials(data.employee.name)}</span>
@@ -75,6 +83,107 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ emplo
           </Panel>
         </>
       )}
+      {editingDepartment && data !== null ? <DepartmentAssignmentModal
+        employee={data.employee}
+        organizationId={user?.organizationId ?? ""}
+        departments={departments ?? []}
+        departmentsLoading={departmentsLoading}
+        departmentsError={departmentsError}
+        onClose={() => setEditingDepartment(false)}
+        onSaved={() => { setEditingDepartment(false); refresh(); }}
+      /> : null}
     </>
   );
+}
+
+function DepartmentAssignmentModal({
+  employee,
+  organizationId,
+  departments,
+  departmentsLoading,
+  departmentsError,
+  onClose,
+  onSaved,
+}: {
+  employee: Employee;
+  organizationId: string;
+  departments: Department[];
+  departmentsLoading: boolean;
+  departmentsError: string | null;
+  onClose(): void;
+  onSaved(): void;
+}) {
+  const currentDepartmentId = employee.departmentId ?? "";
+  const [departmentId, setDepartmentId] = useState(currentDepartmentId);
+  const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await updateEmployeeDepartment({
+        organizationId,
+        employeeId: employee.id,
+        departmentId: departmentId || null,
+        reason,
+      });
+      onSaved();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Department could not be changed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return <Modal
+    open
+    title="Change department"
+    description={`${employee.employeeCode} · ${employee.name} is currently assigned to ${employee.departmentName}.`}
+    onClose={onClose}
+  >
+    <form className="modal-content" onSubmit={submit}>
+      {error ? <ErrorState message={error} /> : null}
+      {departmentsError ? <ErrorState message="Departments could not be loaded. Close this window and try again." /> : null}
+      <div className="form-grid">
+        <div className="form-field form-field-full">
+          <label htmlFor="employee-department">New department</label>
+          <select
+            id="employee-department"
+            autoFocus
+            disabled={departmentsLoading || departmentsError !== null}
+            value={departmentId}
+            onChange={(event) => setDepartmentId(event.target.value)}
+          >
+            <option value="">Unassigned</option>
+            {departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}
+          </select>
+          <small>Fingerprint enrollment and terminal identity will not be changed.</small>
+        </div>
+        <div className="form-field form-field-full">
+          <label htmlFor="department-change-reason">Reason</label>
+          <textarea
+            id="department-change-reason"
+            required
+            minLength={3}
+            maxLength={500}
+            placeholder="Transferred to another team"
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+          />
+        </div>
+      </div>
+      <div className="form-actions">
+        <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+        <Button
+          type="submit"
+          disabled={submitting || departmentsLoading || departmentsError !== null || departmentId === currentDepartmentId || reason.trim().length < 3}
+        >
+          {submitting ? "Saving…" : "Save department"}
+        </Button>
+      </div>
+    </form>
+  </Modal>;
 }

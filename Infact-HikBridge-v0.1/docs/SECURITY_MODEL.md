@@ -54,6 +54,10 @@ First-login organization creation is the narrow exception to normal membership-b
 
 Raw attendance events deny all browser writes, including platform-admin clients. Platform repair uses controlled server tooling with its own audit rather than browser SDK writes.
 
+Employee creation and fingerprint enrollment are HR/owner callables. Browsers cannot write the employee-code registry, device command queue, command lock, or enrollment projection. A command is accepted only by the HMAC-authenticated bridge registered to that exact organization/device, and a terminal must belong to the employee's branch. Only one unexpired fingerprint prompt can be active per terminal.
+
+Biometric templates never cross the cloud trust boundary. The bridge keeps a captured template in memory only long enough to assign it back to the same LAN terminal. Local durable state and Firestore contain command/result metadata only: employee identifiers, finger slot, state, quality, timestamps, and bounded error text.
+
 ## Tenant isolation
 
 All browser-readable business data is nested under its organization. Rules require active membership in that exact path. Tests cover allowed same-tenant reads, forbidden cross-tenant reads/writes, role restrictions, raw-event mutation, and server-only credential paths.

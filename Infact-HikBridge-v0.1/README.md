@@ -14,12 +14,12 @@ Hikvision DS-K1A8503EF
   -> HTTPS + per-device HMAC v1
   -> Firebase Function + Secret Manager + replay protection
   -> immutable Firestore attendanceEvents
-  -> identity mapping + attendance-v1 recalculation
+  -> identity mapping + attendance-v2 recalculation
   -> derived attendanceDays
   -> authenticated Next.js HR operations dashboard
 ```
 
-See [Architecture](docs/ARCHITECTURE.md), [Hikvision integration](docs/HIKVISION_INTEGRATION.md), [Firebase architecture](docs/FIREBASE_ARCHITECTURE.md), and [Security model](docs/SECURITY_MODEL.md).
+See [Architecture](docs/ARCHITECTURE.md), [Hikvision integration](docs/HIKVISION_INTEGRATION.md), [cloud fingerprint enrollment](docs/FINGERPRINT_ENROLLMENT.md), [Firebase architecture](docs/FIREBASE_ARCHITECTURE.md), and [Security model](docs/SECURITY_MODEL.md).
 
 ## Repository layout
 
@@ -106,6 +106,8 @@ Use `--raw` on `test-events` only during controlled support work because device 
 5. Configure Firebase web values in `web/.env.local` from `web/.env.example`; never put a service-account key in the dashboard.
 6. Deploy Firestore Rules and the production dashboard with `NEXT_PUBLIC_DEMO_MODE=false`. A signed-in user without a default organization is sent through the required organization setup wizard.
 7. Provision a device from `/devices` and capture the bridge credential shown once.
+
+After the updated bridge and callables are deployed, owners and HR administrators can create employees and start local-terminal fingerprint enrollment from `/employees`. Follow [Cloud fingerprint enrollment](docs/FINGERPRINT_ENROLLMENT.md); biometric templates remain on the LAN and are never stored in Firestore.
 
 The wizard creates the organization, owner membership, primary branch, default shift, user profile link, and creation audit in one Firestore transaction. Bootstrap-only Rules require the complete validated document set, an unused organization identifier, and a user without an existing default organization. This path works on Firebase's Spark plan; the equivalent `bootstrapOrganization` callable is retained for a future Blaze deployment.
 

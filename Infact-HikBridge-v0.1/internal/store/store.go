@@ -60,23 +60,27 @@ type EventCounts struct {
 }
 
 type Store struct {
-	root       string
-	pendingDir string
-	syncedDir  string
-	failedDir  string
-	mu         sync.Mutex
+	root              string
+	pendingDir        string
+	syncedDir         string
+	failedDir         string
+	commandResultsDir string
+	mu                sync.Mutex
 }
 
 var eventIDRE = regexp.MustCompile(`^[a-f0-9]{64}$`)
+var commandIDRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`)
+var commandResultCodeRE = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 
 func Open(dataDir string) (*Store, error) {
 	s := &Store{
-		root:       dataDir,
-		pendingDir: filepath.Join(dataDir, "events", "pending"),
-		syncedDir:  filepath.Join(dataDir, "events", "synced"),
-		failedDir:  filepath.Join(dataDir, "events", "failed"),
+		root:              dataDir,
+		pendingDir:        filepath.Join(dataDir, "events", "pending"),
+		syncedDir:         filepath.Join(dataDir, "events", "synced"),
+		failedDir:         filepath.Join(dataDir, "events", "failed"),
+		commandResultsDir: filepath.Join(dataDir, "commands", "results"),
 	}
-	for _, dir := range []string{s.pendingDir, s.syncedDir, s.failedDir} {
+	for _, dir := range []string{s.pendingDir, s.syncedDir, s.failedDir, s.commandResultsDir} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return nil, fmt.Errorf("create event store directory: %w", err)
 		}
@@ -531,4 +535,111 @@ func (s *Store) SetCheckpoint(t time.Time) error {
 		[]byte(strconv.FormatInt(t.UnixNano(), 10)),
 		0600,
 	)
+}
+
+func safeCommandFilename(id string) (string, error) {
+	if !commandIDRE.MatchString(id) {
+		return "", fmt.Errorf("invalid command ID %q", id)
+	}
+	return id + ".json", nil
+}
+
+func validateCommandResult(result model.CommandResult) error {
+	if _, err := safeCommandFilename(result.CommandID); err != nil {
+		return err
+	}
+	if result.State != "succeeded" && result.State != "failed" {
+		return errors.New("command result state must be succeeded or failed")
+	}
+	if (result.Code != "" && !commandResultCodeRE.MatchString(result.Code)) || len(result.Message) > 500 {
+		return errors.New("command result error details exceed the size limit")
+	}
+	if result.Output != nil && (len(result.Output.EmployeeNo) > 32 || result.Output.FingerPrintID < 0 ||
+		result.Output.FingerPrintID > 10 || result.Output.Quality < 0 || result.Output.Quality > 100) {
+		return errors.New("command result output is outside the device capability")
+	}
+	return nil
+}
+
+// PutCommandResult durably preserves a terminal command result until the cloud
+// explicitly acknowledges it. A redelivered command can therefore be skipped
+// without repeating a user or fingerprint operation.
+func (s *Store) PutCommandResult(result model.CommandResult) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := validateCommandResult(result); err != nil {
+		return err
+	}
+	name, _ := safeCommandFilename(result.CommandID)
+	b, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode command result: %w", err)
+	}
+	return atomicfile.WriteFile(filepath.Join(s.commandResultsDir, name), b, 0600)
+}
+
+func (s *Store) HasCommandResult(commandID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name, err := safeCommandFilename(commandID)
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(filepath.Join(s.commandResultsDir, name))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (s *Store) CommandResults(limit int) ([]model.CommandResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit < 1 || limit > 20 {
+		return nil, errors.New("command result limit must be between 1 and 20")
+	}
+	names, err := pendingNames(s.commandResultsDir)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]model.CommandResult, 0, min(limit, len(names)))
+	for _, name := range names {
+		if len(results) >= limit {
+			break
+		}
+		b, err := os.ReadFile(filepath.Join(s.commandResultsDir, name))
+		if err != nil {
+			return nil, err
+		}
+		var result model.CommandResult
+		if err := json.Unmarshal(b, &result); err != nil {
+			return nil, fmt.Errorf("decode command result %s: %w", name, err)
+		}
+		if err := validateCommandResult(result); err != nil {
+			return nil, fmt.Errorf("invalid command result %s: %w", name, err)
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func (s *Store) RemoveCommandResults(ids []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range ids {
+		name, err := safeCommandFilename(id)
+		if err != nil {
+			return err
+		}
+		if err := os.Remove(filepath.Join(s.commandResultsDir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) CommandResultCount() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return countJSONFiles(s.commandResultsDir)
 }

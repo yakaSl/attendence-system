@@ -4,7 +4,7 @@
 
 `calculateAttendance(input)` is a pure, deterministic calculation. It reads no clock, database, or environment state. `recalculateAttendance(db, organizationId, employeeId, date)` loads the historical inputs, invokes that calculation, and replaces the deterministic `attendanceDays/{employeeId}_{date}` projection. Calling it repeatedly with unchanged source data produces the same domain result.
 
-Raw documents in `attendanceEvents` are never updated or deleted by attendance processing. A derived day records its source event IDs, applied adjustment IDs, exceptions, and `attendance-v1` calculation version.
+Raw documents in `attendanceEvents` are never updated or deleted by attendance processing. A derived day records its source event IDs, applied adjustment IDs, exceptions, and `attendance-v2` calculation version.
 
 ## Workday and timezone rules
 
@@ -19,9 +19,11 @@ Historical shift assignment uses the newest assignment whose `effectiveFrom <= d
 
 ## Punch selection
 
-`first_last` mode uses the earliest and latest in-window punches. One untyped punch is a check-in with a `missing_check_out` exception. An explicitly typed checkout-only punch produces `missing_check_in`.
+`first_last` mode uses the earliest and latest effective in-window punches. Consecutive untyped punches no more than 60 seconds apart form one effective punch cluster, preventing a repeated arrival scan from becoming a false checkout. One effective untyped punch is a check-in with a `missing_check_out` exception. An explicitly typed checkout-only punch produces `missing_check_in`.
 
-`explicit_status` mode uses the first explicit check-in and last explicit checkout when at least one explicit direction exists. Otherwise it falls back to first/last behavior. Exact same-instant punches with the same direction do not affect the calculation and raise `duplicate_punches_ignored`; all source IDs remain traceable.
+`explicit_status` mode uses the first explicit check-in and last explicit checkout when at least one explicit direction exists. Consecutive punches with the same explicit direction no more than 60 seconds apart form one cluster; opposite directions remain distinct. Ignored repeated scans raise `duplicate_punches_ignored`, and all raw source IDs remain traceable.
+
+The stored calculation keeps `missing_check_out` as immutable audit evidence after a single punch. Live dashboard presentation shows **Checked in** before the scheduled checkout instant and changes to **Missing punch** at or after that instant. A completed pair displays **Present**.
 
 ## Formulas
 

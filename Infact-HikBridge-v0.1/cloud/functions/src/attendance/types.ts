@@ -99,5 +99,5 @@ export interface AttendanceCalculationResult {
   adjustmentIds: string[];
   sourceEventIds: string[];
   exceptions: AttendanceException[];
-  calculationVersion: "attendance-v1";
+  calculationVersion: "attendance-v2";
 }

@@ -49,6 +49,12 @@ export class IngestionService {
     if (!envelope.probe && envelope.status !== undefined) {
       throw new IngestError(400, "invalid_request", "Bridge status is accepted only on probe requests");
     }
+    if (!envelope.probe && envelope.commandResults.length !== 0) {
+      throw new IngestError(400, "invalid_request", "Command results are accepted only on probe requests");
+    }
+    if (!envelope.probe && envelope.acceptCommands) {
+      throw new IngestError(400, "invalid_request", "Commands can be requested only on probe requests");
+    }
     if (!envelope.probe && envelope.events.length === 0) {
       throw new IngestError(400, "invalid_request", "An event request cannot be empty");
     }
@@ -68,6 +74,11 @@ export class IngestionService {
         receivedAt: input.now,
         ...(input.bridgeVersion === undefined ? {} : { bridgeVersion: input.bridgeVersion }),
       });
+      const exchange = await this.repository.exchangeCommands(registration, envelope.commandResults, {
+        requestId: envelope.requestId,
+        receivedAt: input.now,
+        ...(input.bridgeVersion === undefined ? {} : { bridgeVersion: input.bridgeVersion }),
+      }, envelope.acceptCommands);
       return {
         protocolVersion: PROTOCOL_VERSION,
         requestId: envelope.requestId,
@@ -77,6 +88,8 @@ export class IngestionService {
         accepted: [],
         duplicates: [],
         rejected: [],
+        commands: exchange.commands,
+        acknowledgedCommandIds: exchange.acknowledgedCommandIds,
       };
     }
     const writeResult = await this.repository.writeEvents(
@@ -97,6 +110,8 @@ export class IngestionService {
       accepted: writeResult.accepted,
       duplicates: writeResult.duplicates,
       rejected: classified.rejected,
+      commands: [],
+      acknowledgedCommandIds: [],
     };
   }
 }

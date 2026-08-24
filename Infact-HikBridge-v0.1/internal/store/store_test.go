@@ -212,3 +212,42 @@ func TestPruneSyncedNeverTouchesPendingOrRecentEvidence(t *testing.T) {
 		t.Fatalf("removed=%d counts=%+v", removed, counts)
 	}
 }
+
+func TestCommandResultPersistsUntilExplicitCloudAcknowledgement(t *testing.T) {
+	dataDir := t.TempDir()
+	first, err := Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := model.CommandResult{
+		CommandID: "command-17",
+		State:     "succeeded",
+		Output: &model.CommandResultOutput{
+			EmployeeNo:    "EMP-17",
+			FingerPrintID: 2,
+			Quality:       87,
+		},
+	}
+	if err := first.PutCommandResult(result); err != nil {
+		t.Fatal(err)
+	}
+	_ = first.Close()
+
+	restarted, err := Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := restarted.CommandResults(20)
+	if err != nil || len(results) != 1 || results[0].CommandID != result.CommandID {
+		t.Fatalf("durable command results = %+v err=%v", results, err)
+	}
+	if exists, err := restarted.HasCommandResult(result.CommandID); err != nil || !exists {
+		t.Fatalf("result existence before acknowledgement = %t err=%v", exists, err)
+	}
+	if err := restarted.RemoveCommandResults([]string{result.CommandID}); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := restarted.CommandResultCount(); err != nil || count != 0 {
+		t.Fatalf("result count after acknowledgement = %d err=%v", count, err)
+	}
+}

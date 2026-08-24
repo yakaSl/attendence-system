@@ -192,6 +192,63 @@ func TestReportStatusSignsBoundedDeviceHealth(t *testing.T) {
 	}
 }
 
+func TestExchangeCommandsCarriesResultsAndValidatesDeviceCommand(t *testing.T) {
+	expiresAt := time.Date(2026, 8, 23, 13, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		var payload requestPayload
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Error(err)
+			response.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		wantSignature := ComputeSignature(
+			[]byte(testBridgeKey),
+			request.Header.Get("X-HikBridge-Device"),
+			request.Header.Get("X-HikBridge-Timestamp"),
+			request.Header.Get("X-HikBridge-Nonce"),
+			body,
+		)
+		if request.Header.Get("X-HikBridge-Signature") != wantSignature || !payload.Probe || !payload.AcceptCommands {
+			t.Error("command exchange was not authenticated or command-enabled")
+		}
+		if len(payload.CommandResults) != 1 || payload.CommandResults[0].CommandID != "previous-command" {
+			t.Errorf("unexpected command results: %+v", payload.CommandResults)
+		}
+		_ = json.NewEncoder(response).Encode(Response{
+			ProtocolVersion:        ProtocolVersion,
+			RequestID:              payload.RequestID,
+			DeviceID:               payload.DeviceID,
+			OrganizationID:         "org-1",
+			BranchID:               "branch-1",
+			Accepted:               []string{},
+			Duplicates:             []string{},
+			Rejected:               []RejectedEvent{},
+			AcknowledgedCommandIDs: []string{"previous-command"},
+			Commands: []model.DeviceCommand{{
+				ID:        "enroll-command",
+				Type:      model.CommandEnrollFingerprint,
+				IssuedAt:  expiresAt.Add(-time.Minute),
+				ExpiresAt: expiresAt,
+				Payload: model.UserCommandPayload{
+					EmployeeID: "employee-17", EmployeeNo: "EMP-17", Name: "Kasun", FingerPrintID: 2,
+				},
+			}},
+		})
+	}))
+	defer server.Close()
+	result, err := newTestCloudClient(t, server).ExchangeCommands(context.Background(), []model.CommandResult{{
+		CommandID: "previous-command", State: "succeeded",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Commands) != 1 || result.Commands[0].Payload.FingerPrintID != 2 ||
+		len(result.AcknowledgedCommandIDs) != 1 {
+		t.Fatalf("unexpected command exchange: %+v", result)
+	}
+}
+
 func TestNewRequiresHTTPSOutsideExplicitLoopbackDevelopment(t *testing.T) {
 	_, err := New(Options{URL: "http://example.com/events", DeviceID: "device-1", BridgeKey: testBridgeKey})
 	if err == nil || !strings.Contains(err.Error(), "must use HTTPS") {

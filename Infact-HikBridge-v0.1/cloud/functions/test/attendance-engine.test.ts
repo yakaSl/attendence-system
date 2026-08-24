@@ -90,6 +90,47 @@ describe("calculateAttendance", () => {
     expect(result.sourceEventIds).toEqual(["a", "b", "c", "d"]);
   });
 
+  it("keeps one effective punch when an employee scans repeatedly within 60 seconds", () => {
+    const result = calculateAttendance(input({
+      punches: [
+        { id: "first", occurredAt: "2026-08-23T08:30:00+05:30", direction: "unknown" },
+        { id: "second", occurredAt: "2026-08-23T08:30:12+05:30", direction: "unknown" },
+        { id: "third", occurredAt: "2026-08-23T08:30:59+05:30", direction: "unknown" },
+      ],
+    }));
+    expect(result.firstIn).toBe("08:30");
+    expect(result.lastOut).toBeNull();
+    expect(result.workedMinutes).toBe(0);
+    expect(result.exceptions).toContain("duplicate_punches_ignored");
+    expect(result.exceptions).toContain("missing_check_out");
+    expect(result.sourceEventIds).toEqual(["first", "second", "third"]);
+  });
+
+  it("accepts a later untyped scan as checkout after the duplicate window", () => {
+    const result = calculateAttendance(input({
+      punches: [
+        { id: "in", occurredAt: "2026-08-23T08:30:00+05:30", direction: "unknown" },
+        { id: "repeat", occurredAt: "2026-08-23T08:30:15+05:30", direction: "unknown" },
+        { id: "out", occurredAt: "2026-08-23T17:30:00+05:30", direction: "unknown" },
+      ],
+    }));
+    expect(result.firstIn).toBe("08:30");
+    expect(result.lastOut).toBe("17:30");
+    expect(result.exceptions).not.toContain("missing_check_out");
+  });
+
+  it("does not suppress opposite explicit directions inside the duplicate window", () => {
+    const result = calculateAttendance(input({
+      shift: { ...normalShift, punchMode: "explicit_status" },
+      punches: [
+        { id: "in", occurredAt: "2026-08-23T08:30:00+05:30", direction: "in" },
+        { id: "out", occurredAt: "2026-08-23T08:30:20+05:30", direction: "out" },
+      ],
+    }));
+    expect(result.firstIn).toBe("08:30");
+    expect(result.lastOut).toBe("08:30");
+  });
+
   it("honors explicit check-in and checkout status", () => {
     const result = calculateAttendance(input({
       shift: { ...normalShift, punchMode: "explicit_status" },

@@ -80,10 +80,13 @@ const statusLabels: Record<string, string> = {
   holiday: "Holiday",
   rest_day: "Rest day",
   no_shift: "No shift",
+  checked_in: "Checked in",
+  unscheduled_punch: "Unscheduled punch",
   missing_punch: "Missing punch",
   online: "Online",
   offline: "Offline",
   disabled: "Disabled",
+  inactive: "Inactive",
   unknown: "Unknown",
 };
 

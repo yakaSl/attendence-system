@@ -6,6 +6,9 @@ import {
   PROTOCOL_VERSION,
   type BridgeStatus,
   type BridgeSecretProvider,
+  type CommandExchangeResult,
+  type CommandResult,
+  type DeviceCommand,
   type DeviceRegistration,
   type EventWriteContext,
   type EventWriteResult,
@@ -29,6 +32,9 @@ class MemoryRepository implements IngestRepository {
   readonly stored = new Set<string>();
   readonly replays = new Map<string, string>();
   readonly contacts: Array<{ connected: boolean | undefined; version: string | undefined }> = [];
+  readonly commandResults: CommandResult[] = [];
+  commands: DeviceCommand[] = [];
+  deliveredCommands = false;
 
   async getDevice(deviceId: string): Promise<DeviceRegistration | null> {
     return deviceId === registration.deviceId ? registration : null;
@@ -70,6 +76,20 @@ class MemoryRepository implements IngestRepository {
   ): Promise<void> {
     this.contacts.push({ connected: status?.deviceConnected, version: context.bridgeVersion });
   }
+
+  async exchangeCommands(
+    _registration: DeviceRegistration,
+    results: CommandResult[],
+    _context: EventWriteContext,
+    deliver: boolean,
+  ): Promise<CommandExchangeResult> {
+    this.commandResults.push(...results);
+    this.deliveredCommands = deliver;
+    return {
+      commands: deliver ? this.commands : [],
+      acknowledgedCommandIds: results.map((result) => result.commandId),
+    };
+  }
 }
 
 class StaticSecrets implements BridgeSecretProvider {
@@ -98,7 +118,15 @@ function event(id = "a".repeat(64), deviceId = registration.deviceId): Record<st
 function signedInput(
   events: unknown[],
   nonce: string,
-  options: { probe?: boolean; timestamp?: string; deviceId?: string; status?: Record<string, unknown>; bridgeVersion?: string } = {},
+  options: {
+    probe?: boolean;
+    timestamp?: string;
+    deviceId?: string;
+    status?: Record<string, unknown>;
+    bridgeVersion?: string;
+    acceptCommands?: boolean;
+    commandResults?: CommandResult[];
+  } = {},
 ): IngestInput {
   const deviceId = options.deviceId ?? registration.deviceId;
   const timestamp = options.timestamp ?? Math.floor(now.getTime() / 1000).toString();
@@ -107,7 +135,9 @@ function signedInput(
     requestId: nonce,
     deviceId,
     ...(options.probe === true ? { probe: true } : {}),
+    ...(options.acceptCommands === true ? { acceptCommands: true } : {}),
     ...(options.status === undefined ? {} : { status: options.status }),
+    ...(options.commandResults === undefined ? {} : { commandResults: options.commandResults }),
     events,
   }), "utf8");
   return {
@@ -226,5 +256,58 @@ describe("IngestionService", () => {
     }));
     expect(subject.repository.contacts).toEqual([{ connected: false, version: "0.1.0" }]);
     expect(subject.repository.stored.size).toBe(0);
+  });
+
+  it("delivers a device command and acknowledges only submitted command results", async () => {
+    const subject = service();
+    subject.repository.commands = [{
+      id: "enroll-command",
+      type: "enroll_fingerprint",
+      issuedAt: "2026-08-23T11:59:00.000Z",
+      expiresAt: "2026-08-23T12:05:00.000Z",
+      payload: {
+        employeeId: "employee-17",
+        employeeNo: "EMP-17",
+        name: "Kasun Perera",
+        fingerPrintId: 2,
+      },
+    }];
+    const result = await subject.service.ingest(signedInput([], "b".repeat(32), {
+      probe: true,
+      acceptCommands: true,
+      commandResults: [{ commandId: "previous-command", state: "succeeded", output: { employeeNo: "EMP-16" } }],
+    }));
+    expect(subject.repository.deliveredCommands).toBe(true);
+    expect(subject.repository.commandResults).toEqual([
+      { commandId: "previous-command", state: "succeeded", output: { employeeNo: "EMP-16" } },
+    ]);
+    expect(result.commands).toEqual(subject.repository.commands);
+    expect(result.acknowledgedCommandIds).toEqual(["previous-command"]);
+  });
+
+  it("does not lease device commands to an ordinary health probe", async () => {
+    const subject = service();
+    const result = await subject.service.ingest(signedInput([], "c".repeat(32), { probe: true }));
+    expect(subject.repository.deliveredCommands).toBe(false);
+    expect(result.commands).toEqual([]);
+  });
+
+  it("rejects command exchange fields on an attendance event request", async () => {
+    const subject = service();
+    await expect(subject.service.ingest(signedInput([event()], "d".repeat(32), {
+      commandResults: [{ commandId: "command-17", state: "failed", code: "expired" }],
+    }))).rejects.toMatchObject({ status: 400, code: "invalid_request" });
+  });
+
+  it("rejects duplicate command result IDs", async () => {
+    const subject = service();
+    await expect(subject.service.ingest(signedInput([], "e".repeat(32), {
+      probe: true,
+      acceptCommands: true,
+      commandResults: [
+        { commandId: "command-17", state: "failed", code: "expired" },
+        { commandId: "command-17", state: "succeeded" },
+      ],
+    }))).rejects.toMatchObject({ status: 400, code: "invalid_request" });
   });
 });

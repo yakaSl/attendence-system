@@ -104,6 +104,28 @@ The running bridge sends the same probe periodically with a bounded status objec
 
 Status is accepted only on a probe. Text fields are capped at 128 characters and the pending count at 1,000,000. It does not contain errors, credentials, employee data, or LAN addresses. A status probe updates the public tenant device projection; omission remains valid for interactive `test-cloud` compatibility.
 
+The running bridge also uses a probe as a bidirectional command exchange. Only that loop sets `acceptCommands`; interactive cloud tests and ordinary status probes cannot lease work. Completed results are retained locally until their IDs are acknowledged:
+
+```json
+{
+  "protocolVersion": "1",
+  "requestId": "00112233445566778899aabbccddeeff",
+  "deviceId": "office-main-01",
+  "probe": true,
+  "acceptCommands": true,
+  "commandResults": [
+    {
+      "commandId": "command-id",
+      "state": "succeeded",
+      "output": { "employeeNo": "EMP-17", "fingerPrintId": 2, "quality": 88 }
+    }
+  ],
+  "events": []
+}
+```
+
+The cloud may respond with at most one leased terminal command. Supported types are `upsert_user` and `enroll_fingerprint`. An enrollment command contains employee identity fields and a finger slot only. It never contains `fingerData` or another biometric template. The bridge captures the template from the local terminal, sends it immediately back to that terminal, and reports only terminal status, finger slot, and quality.
+
 ## Success response
 
 The response accounts for every submitted event exactly once by ID:
@@ -123,13 +145,17 @@ The response accounts for every submitted event exactly once by ID:
       "code": "invalid_event",
       "message": "eventTime is outside the accepted range"
     }
-  ]
+  ],
+  "commands": [],
+  "acknowledgedCommandIds": []
 }
 ```
 
 The bridge marks only `accepted` and `duplicates` records synced. Rejected records move to retained local failed storage with their error. Missing, unknown, or repeated IDs make the entire acknowledgement invalid and leave the batch retryable.
 
 A probe response contains no event results and must include the resolved `organizationId`.
+
+Command delivery uses a short Firestore lease and a per-terminal fingerprint lock. Before touching the terminal, the bridge durably writes a fail-safe interrupted receipt, then atomically replaces it with the final bounded result metadata. A process failure therefore reports an interrupted attempt instead of silently prompting for another capture. Results remain until cloud acknowledgement. A terminal command expires server-side and client-side; terminal results are idempotently accepted after an ambiguous response.
 
 ## Error response
 

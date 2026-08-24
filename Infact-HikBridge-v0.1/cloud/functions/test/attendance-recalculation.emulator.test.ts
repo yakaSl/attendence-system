@@ -82,7 +82,7 @@ run("Firestore attendance recalculation", () => {
 
     expect(result.lastOut).toBe("18:22");
     expect(result.exceptions).not.toContain("missing_check_out");
-    expect(projection.get("calculationVersion")).toBe("attendance-v1");
+    expect(projection.get("calculationVersion")).toBe("attendance-v2");
     expect(projection.get("sourceEventIds")).toEqual(["event-in", "event-out"]);
   });
 

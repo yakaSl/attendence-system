@@ -13,6 +13,7 @@ import {
 const eventId = z.string().regex(/^[a-f0-9]{64}$/);
 const deviceId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
 const optionalText = (max: number) => z.string().max(max).optional();
+const commandId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/);
 
 const bridgeStatusSchema = z.object({
   deviceConnected: z.boolean(),
@@ -42,12 +43,36 @@ const eventSchema = z.object({
   receivedAt: z.iso.datetime({ offset: true }),
 }).strict();
 
+const commandResultSchema = z.object({
+  commandId,
+  state: z.enum(["succeeded", "failed"]),
+  code: z.string().regex(/^[a-z0-9_]{1,64}$/).optional(),
+  message: z.string().trim().max(500).optional(),
+  output: z.object({
+    employeeNo: z.string().min(1).max(32).optional(),
+    fingerPrintId: z.number().int().min(1).max(10).optional(),
+    quality: z.number().int().min(1).max(100).optional(),
+  }).strict().optional(),
+}).strict();
+
+const commandResultsSchema = z.array(commandResultSchema).max(20).superRefine((results, context) => {
+  const seen = new Set<string>();
+  for (const [index, result] of results.entries()) {
+    if (seen.has(result.commandId)) {
+      context.addIssue({ code: "custom", message: "Command result IDs must be unique", path: [index, "commandId"] });
+    }
+    seen.add(result.commandId);
+  }
+});
+
 const envelopeSchema = z.object({
   protocolVersion: z.literal(PROTOCOL_VERSION),
   requestId: z.string().regex(/^[a-f0-9]{32}$/),
   deviceId,
   probe: z.boolean().optional().default(false),
+  acceptCommands: z.boolean().optional().default(false),
   status: bridgeStatusSchema.optional(),
+  commandResults: commandResultsSchema.optional().default([]),
   events: z.array(z.unknown()).max(MAX_BATCH_SIZE),
 }).strict();
 

@@ -3,6 +3,7 @@ package hikvision
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -20,8 +21,9 @@ import (
 )
 
 const (
-	maxResponseBytes = 4 << 20
-	maxSearchPages   = 4000
+	maxResponseBytes         = 4 << 20
+	maxSearchPages           = 4000
+	maxFingerprintDataLength = 768
 )
 
 func newSearchID(prefix string) string {
@@ -142,6 +144,20 @@ func (c *Client) request(ctx context.Context, method, path string, payload any) 
 			return nil, 0, fmt.Errorf("encode Hikvision request: %w", err)
 		}
 	}
+	contentType := ""
+	if payload != nil {
+		contentType = "application/json"
+	}
+	return c.requestEncoded(ctx, c.http, method, path, encoded, contentType)
+}
+
+func (c *Client) requestEncoded(
+	ctx context.Context,
+	client *digestClient,
+	method, path string,
+	encoded []byte,
+	contentType string,
+) ([]byte, int, error) {
 	operation := method + " " + strings.SplitN(path, "?", 2)[0]
 	for attempt := 0; ; attempt++ {
 		var body io.Reader
@@ -152,11 +168,11 @@ func (c *Client) request(ctx context.Context, method, path string, payload any) 
 		if err != nil {
 			return nil, 0, fmt.Errorf("create Hikvision request: %w", err)
 		}
-		if payload != nil {
-			req.Header.Set("Content-Type", "application/json")
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
 		}
 		req.Header.Set("Accept", "application/json, application/xml;q=0.9, */*;q=0.8")
-		resp, err := c.http.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
 			if attempt < c.retries && retryableRequestError(ctx, err) {
 				if err := waitForRetry(ctx, attempt); err != nil {
@@ -202,6 +218,9 @@ func readDeviceResponse(body io.Reader) ([]byte, error) {
 
 func safeDeviceErrorMessage(body []byte) string {
 	var jsonStatus struct {
+		StatusString   string `json:"statusString"`
+		SubStatusCode  string `json:"subStatusCode"`
+		ErrorCode      int    `json:"errorCode"`
 		ResponseStatus struct {
 			StatusString  string `json:"statusString"`
 			SubStatusCode string `json:"subStatusCode"`
@@ -210,14 +229,20 @@ func safeDeviceErrorMessage(body []byte) string {
 	}
 	if err := json.Unmarshal(body, &jsonStatus); err == nil {
 		parts := []string{}
-		if jsonStatus.ResponseStatus.StatusString != "" {
-			parts = append(parts, jsonStatus.ResponseStatus.StatusString)
+		statusString := jsonStatus.ResponseStatus.StatusString
+		subStatusCode := jsonStatus.ResponseStatus.SubStatusCode
+		errorCode := jsonStatus.ResponseStatus.ErrorCode
+		if statusString == "" {
+			statusString, subStatusCode, errorCode = jsonStatus.StatusString, jsonStatus.SubStatusCode, jsonStatus.ErrorCode
 		}
-		if jsonStatus.ResponseStatus.SubStatusCode != "" {
-			parts = append(parts, jsonStatus.ResponseStatus.SubStatusCode)
+		if statusString != "" {
+			parts = append(parts, statusString)
 		}
-		if jsonStatus.ResponseStatus.ErrorCode != 0 {
-			parts = append(parts, fmt.Sprintf("code=%d", jsonStatus.ResponseStatus.ErrorCode))
+		if subStatusCode != "" {
+			parts = append(parts, subStatusCode)
+		}
+		if errorCode != 0 {
+			parts = append(parts, fmt.Sprintf("code=%d", errorCode))
 		}
 		if len(parts) > 0 {
 			return strings.Join(parts, " ")
@@ -245,6 +270,34 @@ func safeDeviceErrorMessage(body []byte) string {
 		}
 	}
 	return "device rejected the request"
+}
+
+func validateDeviceResponseStatus(body []byte) error {
+	var jsonStatus struct {
+		StatusCode     *int `json:"statusCode"`
+		ResponseStatus struct {
+			StatusCode *int `json:"statusCode"`
+		} `json:"ResponseStatus"`
+	}
+	if err := json.Unmarshal(body, &jsonStatus); err == nil {
+		statusCode := jsonStatus.ResponseStatus.StatusCode
+		if statusCode == nil {
+			statusCode = jsonStatus.StatusCode
+		}
+		if statusCode != nil && *statusCode != 1 {
+			return errors.New(safeDeviceErrorMessage(body))
+		}
+		return nil
+	}
+	var xmlStatus struct {
+		XMLName    xml.Name `xml:"ResponseStatus"`
+		StatusCode int      `xml:"statusCode"`
+	}
+	if err := xml.Unmarshal(body, &xmlStatus); err == nil && xmlStatus.XMLName.Local == "ResponseStatus" &&
+		xmlStatus.StatusCode != 0 && xmlStatus.StatusCode != 1 {
+		return errors.New(safeDeviceErrorMessage(body))
+	}
+	return nil
 }
 
 func retryableRequestError(ctx context.Context, err error) bool {
@@ -476,6 +529,256 @@ func (c *Client) SearchUsers(ctx context.Context) ([]User, error) {
 		position += len(pageUsers)
 	}
 	return nil, errors.New("Hikvision user pagination exceeded safety limit")
+}
+
+type UserProvisioning struct {
+	EmployeeNo string
+	Name       string
+}
+
+type FingerprintCapture struct {
+	FingerData    string
+	FingerPrintID int
+	Quality       int
+}
+
+func validateUserProvisioning(value UserProvisioning) error {
+	value.EmployeeNo = strings.TrimSpace(value.EmployeeNo)
+	value.Name = strings.TrimSpace(value.Name)
+	if len(value.EmployeeNo) < 1 || len(value.EmployeeNo) > 32 {
+		return errors.New("Hikvision employee number must contain 1-32 characters")
+	}
+	if len(value.Name) < 1 || len(value.Name) > 128 {
+		return errors.New("Hikvision employee name must contain 1-128 characters")
+	}
+	if strings.ContainsAny(value.EmployeeNo+value.Name, "\r\n") {
+		return errors.New("Hikvision employee fields contain control characters")
+	}
+	return nil
+}
+
+func (c *Client) searchUser(ctx context.Context, employeeNo string) (*User, error) {
+	searchID := newSearchID("u")
+	payload := map[string]any{
+		"UserInfoSearchCond": map[string]any{
+			"searchID":             searchID,
+			"searchResultPosition": 0,
+			"maxResults":           10,
+			"EmployeeNoList": []map[string]string{{
+				"employeeNo": employeeNo,
+			}},
+		},
+	}
+	b, _, err := c.request(ctx, http.MethodPost, "/ISAPI/AccessControl/UserInfo/Search?format=json", payload)
+	if err != nil {
+		return nil, err
+	}
+	var response userSearchResponse
+	if err := json.Unmarshal(b, &response); err != nil {
+		return nil, fmt.Errorf("decode Hikvision user lookup: %w", err)
+	}
+	for _, raw := range response.UserInfoSearch.UserInfo {
+		var info userInfo
+		if err := json.Unmarshal(raw, &info); err != nil {
+			return nil, fmt.Errorf("decode Hikvision user lookup result: %w", err)
+		}
+		if info.EmployeeNo == employeeNo {
+			count := info.NumOfFP
+			return &User{EmployeeNo: info.EmployeeNo, Name: info.Name, UserType: info.UserType, FingerprintCount: count, Raw: append(json.RawMessage(nil), raw...)}, nil
+		}
+	}
+	return nil, nil
+}
+
+// UpsertUser creates or updates one terminal user. It does not send a password,
+// card, or biometric template and is safe to retry after an ambiguous response.
+func (c *Client) UpsertUser(ctx context.Context, value UserProvisioning) error {
+	value.EmployeeNo = strings.TrimSpace(value.EmployeeNo)
+	value.Name = strings.TrimSpace(value.Name)
+	if err := validateUserProvisioning(value); err != nil {
+		return err
+	}
+	existing, err := c.searchUser(ctx, value.EmployeeNo)
+	if err != nil {
+		return fmt.Errorf("check existing Hikvision user: %w", err)
+	}
+	method := http.MethodPost
+	path := "/ISAPI/AccessControl/UserInfo/Record?format=json"
+	if existing != nil {
+		method = http.MethodPut
+		path = "/ISAPI/AccessControl/UserInfo/SetUp?format=json"
+	}
+	payload := map[string]any{
+		"UserInfo": map[string]any{
+			"employeeNo": value.EmployeeNo,
+			"name":       value.Name,
+			"userType":   "normal",
+			"Valid": map[string]any{
+				"enable": false,
+			},
+			"userVerifyMode": "fp",
+		},
+	}
+	b, _, err := c.request(ctx, method, path, payload)
+	if err != nil {
+		return fmt.Errorf("upsert Hikvision user %s: %w", value.EmployeeNo, err)
+	}
+	if err := validateDeviceResponseStatus(b); err != nil {
+		return fmt.Errorf("upsert Hikvision user %s: %w", value.EmployeeNo, err)
+	}
+	return nil
+}
+
+func captureXML(fingerPrintID int) []byte {
+	return []byte(fmt.Sprintf(
+		`<?xml version="1.0" encoding="UTF-8"?><CaptureFingerPrintCond version="2.0" xmlns="http://www.isapi.org/ver20/XMLSchema"><fingerNo>%d</fingerNo></CaptureFingerPrintCond>`,
+		fingerPrintID,
+	))
+}
+
+func parseFingerprintCapture(body []byte) (FingerprintCapture, error) {
+	var jsonPayload struct {
+		Capture struct {
+			FingerData    string `json:"fingerData"`
+			FingerNo      int    `json:"fingerNo"`
+			FingerPrintID int    `json:"fingerPrintID"`
+			Quality       int    `json:"fingerPrintQuality"`
+		} `json:"CaptureFingerPrint"`
+	}
+	result := FingerprintCapture{}
+	if err := json.Unmarshal(body, &jsonPayload); err == nil && jsonPayload.Capture.FingerData != "" {
+		result.FingerData = jsonPayload.Capture.FingerData
+		result.FingerPrintID = jsonPayload.Capture.FingerNo
+		if result.FingerPrintID == 0 {
+			result.FingerPrintID = jsonPayload.Capture.FingerPrintID
+		}
+		result.Quality = jsonPayload.Capture.Quality
+	} else {
+		start := bytes.Index(body, []byte("<CaptureFingerPrint"))
+		endTag := []byte("</CaptureFingerPrint>")
+		end := bytes.Index(body, endTag)
+		if start < 0 || end < start {
+			return FingerprintCapture{}, errors.New("Hikvision fingerprint response omitted capture data")
+		}
+		end += len(endTag)
+		var xmlPayload struct {
+			XMLName    xml.Name `xml:"CaptureFingerPrint"`
+			FingerData string   `xml:"fingerData"`
+			FingerNo   int      `xml:"fingerNo"`
+			Quality    int      `xml:"fingerPrintQuality"`
+		}
+		if err := xml.Unmarshal(body[start:end], &xmlPayload); err != nil {
+			return FingerprintCapture{}, fmt.Errorf("decode Hikvision fingerprint capture: %w", err)
+		}
+		result = FingerprintCapture{FingerData: xmlPayload.FingerData, FingerPrintID: xmlPayload.FingerNo, Quality: xmlPayload.Quality}
+	}
+	decoded, err := base64.StdEncoding.DecodeString(result.FingerData)
+	if err != nil {
+		return FingerprintCapture{}, errors.New("Hikvision fingerprint template is not valid base64")
+	}
+	if len(decoded) < 1 || len(result.FingerData) > maxFingerprintDataLength {
+		return FingerprintCapture{}, fmt.Errorf("Hikvision fingerprint template size %d is outside protocol capability", len(result.FingerData))
+	}
+	if result.FingerPrintID < 1 || result.FingerPrintID > 10 || result.Quality < 1 || result.Quality > 100 {
+		return FingerprintCapture{}, errors.New("Hikvision fingerprint capture metadata is outside device capability")
+	}
+	return result, nil
+}
+
+// CaptureFingerprint keeps the biometric template in memory only. A longer
+// per-request timeout gives the employee time to touch the terminal scanner.
+func (c *Client) CaptureFingerprint(ctx context.Context, fingerPrintID int) (FingerprintCapture, error) {
+	if fingerPrintID < 1 || fingerPrintID > 10 {
+		return FingerprintCapture{}, errors.New("fingerprint ID must be between 1 and 10")
+	}
+	captureHTTP := *c.http.http
+	if captureHTTP.Timeout < 45*time.Second {
+		captureHTTP.Timeout = 45 * time.Second
+	}
+	captureClient := newDigestClient(&captureHTTP, c.http.username, c.http.password)
+	b, _, err := c.requestEncoded(
+		ctx,
+		captureClient,
+		http.MethodPost,
+		"/ISAPI/AccessControl/CaptureFingerPrint",
+		captureXML(fingerPrintID),
+		"application/xml",
+	)
+	if err != nil {
+		return FingerprintCapture{}, fmt.Errorf("capture Hikvision fingerprint: %w", err)
+	}
+	return parseFingerprintCapture(b)
+}
+
+func (c *Client) SetFingerprint(ctx context.Context, employeeNo string, capture FingerprintCapture) error {
+	if len(strings.TrimSpace(employeeNo)) < 1 || len(employeeNo) > 32 {
+		return errors.New("Hikvision employee number must contain 1-32 characters")
+	}
+	if _, err := parseFingerprintCapture([]byte(fmt.Sprintf(
+		`<CaptureFingerPrint><fingerData>%s</fingerData><fingerNo>%d</fingerNo><fingerPrintQuality>%d</fingerPrintQuality></CaptureFingerPrint>`,
+		capture.FingerData,
+		capture.FingerPrintID,
+		capture.Quality,
+	))); err != nil {
+		return fmt.Errorf("validate fingerprint capture: %w", err)
+	}
+	payload := map[string]any{
+		"FingerPrintCfg": map[string]any{
+			"employeeNo":       employeeNo,
+			"enableCardReader": []int{1},
+			"fingerPrintID":    capture.FingerPrintID,
+			"fingerType":       "normalFP",
+			"fingerData":       capture.FingerData,
+			"checkEmployeeNo":  true,
+		},
+	}
+	b, _, err := c.request(ctx, http.MethodPost, "/ISAPI/AccessControl/FingerPrint/SetUp?format=json", payload)
+	if err != nil {
+		return fmt.Errorf("assign Hikvision fingerprint to employee %s: %w", employeeNo, err)
+	}
+	if err := validateFingerprintSetResponse(b); err != nil {
+		return fmt.Errorf("assign Hikvision fingerprint to employee %s: %w", employeeNo, err)
+	}
+	return nil
+}
+
+func validateFingerprintSetResponse(body []byte) error {
+	var payload struct {
+		Status struct {
+			State      string `json:"status"`
+			StatusList []struct {
+				ReaderStatus json.RawMessage `json:"cardReaderRecvStatus"`
+				ErrorMessage string          `json:"errorMsg"`
+			} `json:"StatusList"`
+		} `json:"FingerPrintStatus"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		// Some firmware replies in XML despite format=json. HTTP success with a
+		// normal ResponseStatus is still valid, while an explicit failure is not.
+		var status struct {
+			XMLName xml.Name `xml:"FingerPrintStatus"`
+			State   string   `xml:"status"`
+		}
+		if xml.Unmarshal(body, &status) == nil && strings.EqualFold(strings.TrimSpace(status.State), "failed") {
+			return errors.New("fingerprint reader reported failure")
+		}
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(payload.Status.State), "failed") {
+		return errors.New("fingerprint reader reported failure")
+	}
+	for _, reader := range payload.Status.StatusList {
+		value := strings.Trim(string(reader.ReaderStatus), "\"")
+		if value == "1" {
+			continue
+		}
+		message := strings.TrimSpace(reader.ErrorMessage)
+		if message == "" {
+			message = "fingerprint reader status " + value
+		}
+		return errors.New(message)
+	}
+	return nil
 }
 
 type acsInfo struct {

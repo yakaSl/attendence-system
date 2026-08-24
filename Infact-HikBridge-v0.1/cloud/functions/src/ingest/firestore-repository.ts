@@ -11,6 +11,9 @@ import {
 
 import type {
   BridgeStatus,
+  CommandExchangeResult,
+  CommandResult,
+  DeviceCommand,
   DeviceRegistration,
   EventWriteContext,
   EventWriteResult,
@@ -177,7 +180,7 @@ export class FirestoreIngestRepository implements IngestRepository {
       Timestamp.fromDate(new Date(status.lastSuccessfulDevicePoll));
     await this.db.doc(registration.deviceDocumentPath).set({
       lastSeen: Timestamp.fromDate(context.receivedAt),
-      connectionStatus: status?.deviceConnected === false ? "offline" : "online",
+      ...(status === undefined ? {} : { connectionStatus: status.deviceConnected ? "online" : "offline" }),
       ...(status === undefined ? {} : { pendingLocalEvents: status.pendingEvents }),
       ...(lastSuccessfulDevicePoll === undefined ? {} : { lastSuccessfulDevicePoll }),
       ...(status?.deviceModel === undefined || status.deviceModel === "" ? {} : { deviceModel: status.deviceModel }),
@@ -185,6 +188,203 @@ export class FirestoreIngestRepository implements IngestRepository {
       ...(status?.firmwareVersion === undefined || status.firmwareVersion === "" ? {} : { firmwareVersion: status.firmwareVersion }),
       ...(context.bridgeVersion === undefined ? {} : { bridgeVersion: context.bridgeVersion }),
     }, { merge: true });
+  }
+
+  async exchangeCommands(
+    registration: DeviceRegistration,
+    results: CommandResult[],
+    context: EventWriteContext,
+    deliver: boolean,
+  ): Promise<CommandExchangeResult> {
+    const organization = this.db.collection("organizations").doc(registration.organizationId);
+    const device = organization.collection("devices").doc(registration.deviceId);
+    const commands = device.collection("commands");
+    const fingerprintLock = device.collection("commandLocks").doc("fingerprint");
+    const acknowledgedCommandIds: string[] = [];
+    const now = Timestamp.fromDate(context.receivedAt);
+
+    if (results.length > 0) {
+      const resultRefs = results.map((result) => commands.doc(result.commandId));
+      await this.db.runTransaction(async (transaction) => {
+        const allSnapshots = await transaction.getAll(...resultRefs, fingerprintLock);
+        const snapshots = allSnapshots.slice(0, resultRefs.length);
+        const lockSnapshot = allSnapshots[resultRefs.length];
+        const enrollmentRefs = [...new Map(snapshots.flatMap((snapshot) => {
+          if (!snapshot.exists) return [];
+          const employeeNo = snapshot.get("employeeNo");
+          if (typeof employeeNo !== "string") return [];
+          const ref = organization.collection("deviceEnrollments").doc(identityKey(registration.deviceId, employeeNo));
+          return [[ref.path, ref] as const];
+        })).values()];
+        const enrollmentSnapshots = enrollmentRefs.length === 0 ? [] : await transaction.getAll(...enrollmentRefs);
+        const enrollmentByPath = new Map(enrollmentSnapshots.map((snapshot) => [snapshot.ref.path, snapshot]));
+        for (const [index, snapshot] of snapshots.entries()) {
+          const result = results[index];
+          const ref = resultRefs[index];
+          if (result === undefined || ref === undefined || !snapshot.exists) continue;
+          if (snapshot.get("deviceId") !== registration.deviceId) continue;
+          const currentState = snapshot.get("state");
+          if (currentState !== "succeeded" && currentState !== "failed") {
+            transaction.update(ref, {
+              state: result.state,
+              resultCode: result.code ?? null,
+              resultMessage: result.message ?? null,
+              result: result.output ?? null,
+              completedAt: now,
+              updatedAt: now,
+            });
+            const employeeId = snapshot.get("employeeId");
+            const employeeNo = snapshot.get("employeeNo");
+            const type = snapshot.get("type");
+            if (type === "enroll_fingerprint" && lockSnapshot?.get("commandId") === result.commandId) {
+              transaction.delete(fingerprintLock);
+            }
+            if (typeof employeeId === "string" && typeof employeeNo === "string") {
+              const enrollment = organization.collection("deviceEnrollments").doc(identityKey(registration.deviceId, employeeNo));
+              const currentEnrollment = enrollmentByPath.get(enrollment.path);
+              const failed = result.state === "failed";
+              const currentEnrollmentState = currentEnrollment?.get("state");
+              const differentCurrentCommand = currentEnrollment?.exists === true &&
+                currentEnrollment.get("commandId") !== result.commandId;
+              const preserveFingerprintState = differentCurrentCommand && (type === "enroll_fingerprint" ||
+                (type === "upsert_user" &&
+                  (currentEnrollmentState === "queued" || currentEnrollmentState === "capturing" || currentEnrollmentState === "enrolled" ||
+                    (currentEnrollmentState === "failed" && typeof currentEnrollment.get("fingerPrintId") === "number"))));
+              if (preserveFingerprintState) {
+                if (type === "upsert_user") {
+                  transaction.set(enrollment, {
+                    lastUserSyncError: failed ? result.message ?? result.code ?? "Device user sync failed" : null,
+                    ...(!failed ? { userSyncedAt: now } : {}),
+                  }, { merge: true });
+                }
+              } else {
+                transaction.set(enrollment, {
+                  organizationId: registration.organizationId,
+                  branchId: registration.branchId,
+                  deviceId: registration.deviceId,
+                  employeeId,
+                  employeeNo,
+                  state: failed ? "failed" : type === "enroll_fingerprint" ? "enrolled" : "user_synced",
+                  commandId: result.commandId,
+                  lastError: failed ? result.message ?? result.code ?? "Device command failed" : null,
+                  ...(type === "upsert_user" && !failed ? { userSyncedAt: now } : {}),
+                  ...(type === "enroll_fingerprint" && !failed ? {
+                    enrolledAt: now,
+                    fingerPrintId: result.output?.fingerPrintId ?? snapshot.get("fingerPrintId") ?? 1,
+                    quality: result.output?.quality ?? null,
+                  } : {}),
+                  updatedAt: now,
+                }, { merge: true });
+              }
+            }
+          }
+          acknowledgedCommandIds.push(result.commandId);
+        }
+      });
+    }
+
+    if (!deliver) return { commands: [], acknowledgedCommandIds };
+    const candidates = await commands.where("state", "in", ["queued", "dispatched"]).limit(20).get();
+    if (candidates.empty) return { commands: [], acknowledgedCommandIds };
+
+    const delivered = await this.db.runTransaction(async (transaction): Promise<DeviceCommand[]> => {
+      const allSnapshots = await transaction.getAll(...candidates.docs.map((snapshot) => snapshot.ref), fingerprintLock);
+      const snapshots = allSnapshots.slice(0, candidates.docs.length);
+      const lockSnapshot = allSnapshots[candidates.docs.length];
+      const enrollmentRefs = [...new Map(snapshots.flatMap((snapshot) => {
+        if (!snapshot.exists) return [];
+        const employeeNo = snapshot.get("employeeNo");
+        if (typeof employeeNo !== "string") return [];
+        const ref = organization.collection("deviceEnrollments").doc(identityKey(registration.deviceId, employeeNo));
+        return [[ref.path, ref] as const];
+      })).values()];
+      const enrollmentSnapshots = enrollmentRefs.length === 0 ? [] : await transaction.getAll(...enrollmentRefs);
+      const enrollmentByPath = new Map(enrollmentSnapshots.map((snapshot) => [snapshot.ref.path, snapshot]));
+      const values: DeviceCommand[] = [];
+      for (const snapshot of snapshots) {
+        if (!snapshot.exists || snapshot.get("deviceId") !== registration.deviceId) continue;
+        const state = snapshot.get("state");
+        const leaseUntil = snapshot.get("leaseUntil");
+        const expiresAt = snapshot.get("expiresAt");
+        const expired = !(expiresAt instanceof Timestamp) || expiresAt.toMillis() <= context.receivedAt.getTime();
+        const leaseActive = leaseUntil instanceof Timestamp && leaseUntil.toMillis() > context.receivedAt.getTime();
+        if (expired) {
+          transaction.update(snapshot.ref, { state: "failed", resultCode: "expired", resultMessage: "Command expired before delivery", completedAt: now, updatedAt: now });
+          if (lockSnapshot?.get("commandId") === snapshot.id) transaction.delete(fingerprintLock);
+          const expiredEmployeeNo = snapshot.get("employeeNo");
+          if (typeof expiredEmployeeNo === "string") {
+            const enrollment = organization.collection("deviceEnrollments").doc(identityKey(registration.deviceId, expiredEmployeeNo));
+            if (enrollmentByPath.get(enrollment.path)?.get("commandId") === snapshot.id) {
+              transaction.set(enrollment, {
+                state: "failed",
+                commandId: snapshot.id,
+                lastError: "Command expired before delivery",
+                updatedAt: now,
+              }, { merge: true });
+            }
+          }
+          continue;
+        }
+        if (state === "dispatched" && leaseActive) continue;
+        const type = snapshot.get("type");
+        const employeeId = snapshot.get("employeeId");
+        const employeeNo = snapshot.get("employeeNo");
+        const name = snapshot.get("name");
+        const issuedAt = snapshot.get("createdAt");
+        const fingerPrintId = snapshot.get("fingerPrintId");
+        if ((type !== "upsert_user" && type !== "enroll_fingerprint") ||
+            typeof employeeId !== "string" || typeof employeeNo !== "string" || typeof name !== "string" ||
+            !(issuedAt instanceof Timestamp) ||
+            (type === "enroll_fingerprint" &&
+              (typeof fingerPrintId !== "number" || !Number.isInteger(fingerPrintId) || fingerPrintId < 1 || fingerPrintId > 10))) {
+          transaction.update(snapshot.ref, { state: "failed", resultCode: "invalid_command", resultMessage: "Stored command is malformed", completedAt: now, updatedAt: now });
+          if (lockSnapshot?.get("commandId") === snapshot.id) transaction.delete(fingerprintLock);
+          if (typeof employeeNo === "string") {
+            const enrollment = organization.collection("deviceEnrollments").doc(identityKey(registration.deviceId, employeeNo));
+            if (enrollmentByPath.get(enrollment.path)?.get("commandId") === snapshot.id) {
+              transaction.set(enrollment, {
+                state: "failed",
+                commandId: snapshot.id,
+                lastError: "Stored command is malformed",
+                updatedAt: now,
+              }, { merge: true });
+            }
+          }
+          continue;
+        }
+        // A terminal can display only one capture prompt at a time. Keep later
+        // commands queued until this command has produced a durable result.
+        if (values.length >= 1) continue;
+        transaction.update(snapshot.ref, {
+          state: "dispatched",
+          leaseUntil: Timestamp.fromMillis(context.receivedAt.getTime() + 2 * 60 * 1000),
+          lastDispatchedAt: now,
+          attempts: FieldValue.increment(1),
+          updatedAt: now,
+        });
+        if (type === "enroll_fingerprint") {
+          transaction.set(organization.collection("deviceEnrollments").doc(identityKey(registration.deviceId, employeeNo)), {
+            state: "capturing",
+            commandId: snapshot.id,
+            updatedAt: now,
+          }, { merge: true });
+        }
+        values.push({
+          id: snapshot.id,
+          type,
+          issuedAt: issuedAt.toDate().toISOString(),
+          expiresAt: expiresAt.toDate().toISOString(),
+          payload: {
+            employeeId,
+            employeeNo,
+            name,
+            ...(type === "enroll_fingerprint" && typeof fingerPrintId === "number" ? { fingerPrintId } : {}),
+          },
+        });
+      }
+      return values;
+    });
+    return { commands: delivered, acknowledgedCommandIds };
   }
 
   private mappingByKey(snapshots: DocumentSnapshot[]): Map<string, IdentityMapping> {

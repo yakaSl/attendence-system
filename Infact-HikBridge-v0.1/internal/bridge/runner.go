@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,6 +44,14 @@ type Status struct {
 	LastCloudSync            time.Time `json:"lastCloudSync,omitempty"`
 	LastCloudError           string    `json:"lastCloudError,omitempty"`
 	LastStorageError         string    `json:"lastStorageError,omitempty"`
+	LastCommandPoll          time.Time `json:"lastCommandPoll,omitempty"`
+	LastCommandError         string    `json:"lastCommandError,omitempty"`
+	ActiveCommandID          string    `json:"activeCommandId,omitempty"`
+	ActiveCommandType        string    `json:"activeCommandType,omitempty"`
+	PendingCommandResults    int       `json:"pendingCommandResults"`
+	CommandsReceived         int64     `json:"commandsReceived"`
+	CommandsSucceeded        int64     `json:"commandsSucceeded"`
+	CommandsFailed           int64     `json:"commandsFailed"`
 }
 
 type Runner struct {
@@ -53,9 +62,10 @@ type Runner struct {
 	cloud   *syncer.Client
 	version string
 
-	mu      sync.RWMutex
-	status  Status
-	running atomic.Bool
+	mu       sync.RWMutex
+	deviceMu sync.Mutex
+	status   Status
+	running  atomic.Bool
 }
 
 func New(cfg *config.Config, logger *slog.Logger, version string) (*Runner, error) {
@@ -112,16 +122,22 @@ func (r *Runner) Close() error { return r.store.Close() }
 
 func (r *Runner) refreshCounts() {
 	counts, err := r.store.Counts()
+	commandResults, commandErr := r.store.CommandResultCount()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err != nil {
 		r.status.LastStorageError = err.Error()
 		return
 	}
+	if commandErr != nil {
+		r.status.LastStorageError = commandErr.Error()
+		return
+	}
 	r.status.PendingEvents = counts.Pending
 	r.status.UploadingEvents = counts.Uploading
 	r.status.SyncedEvents = counts.Synced
 	r.status.FailedEvents = counts.Failed
+	r.status.PendingCommandResults = commandResults
 	r.status.LastStorageError = ""
 }
 
@@ -135,7 +151,9 @@ func (r *Runner) Snapshot() Status {
 }
 
 func (r *Runner) refreshDeviceMetadata(ctx context.Context) {
+	r.deviceMu.Lock()
 	info, err := r.device.DeviceInfo(ctx)
+	r.deviceMu.Unlock()
 	if err != nil {
 		r.log.Warn("device_metadata_failed", "device", r.cfg.Hikvision.DeviceID, "error", err)
 		return
@@ -168,7 +186,9 @@ func (r *Runner) pollOnce(ctx context.Context) error {
 		start = end.Add(-time.Duration(r.cfg.Service.OverlapSeconds) * time.Second)
 	}
 
+	r.deviceMu.Lock()
 	result, err := r.device.SearchEventsDetailed(ctx, start, end)
+	r.deviceMu.Unlock()
 	r.mu.Lock()
 	r.status.LastDevicePoll = time.Now()
 	if err != nil {
@@ -475,6 +495,160 @@ func (r *Runner) syncLoop(ctx context.Context, done chan<- struct{}) {
 	}
 }
 
+func commandError(code string, err error) model.CommandResult {
+	message := strings.TrimSpace(err.Error())
+	if len(message) > 500 {
+		message = message[:500]
+	}
+	return model.CommandResult{State: "failed", Code: code, Message: message}
+}
+
+func (r *Runner) executeCommand(ctx context.Context, command model.DeviceCommand) model.CommandResult {
+	result := model.CommandResult{CommandID: command.ID}
+	if time.Now().After(command.ExpiresAt) {
+		result = commandError("expired", errors.New("command expired before local execution"))
+		result.CommandID = command.ID
+		return result
+	}
+	provisioning := hikvision.UserProvisioning{
+		EmployeeNo: command.Payload.EmployeeNo,
+		Name:       command.Payload.Name,
+	}
+	r.deviceMu.Lock()
+	defer r.deviceMu.Unlock()
+	if err := r.device.UpsertUser(ctx, provisioning); err != nil {
+		result = commandError("user_sync_failed", err)
+		result.CommandID = command.ID
+		return result
+	}
+	if command.Type == model.CommandUpsertUser {
+		result.State = "succeeded"
+		result.Output = &model.CommandResultOutput{EmployeeNo: command.Payload.EmployeeNo}
+		return result
+	}
+	if command.Type != model.CommandEnrollFingerprint {
+		result = commandError("unsupported_command", fmt.Errorf("unsupported command type %q", command.Type))
+		result.CommandID = command.ID
+		return result
+	}
+	capture, err := r.device.CaptureFingerprint(ctx, command.Payload.FingerPrintID)
+	if err != nil {
+		result = commandError("fingerprint_capture_failed", err)
+		result.CommandID = command.ID
+		return result
+	}
+	if err := r.device.SetFingerprint(ctx, command.Payload.EmployeeNo, capture); err != nil {
+		result = commandError("fingerprint_setup_failed", err)
+		result.CommandID = command.ID
+		return result
+	}
+	result.State = "succeeded"
+	result.Output = &model.CommandResultOutput{
+		EmployeeNo:    command.Payload.EmployeeNo,
+		FingerPrintID: capture.FingerPrintID,
+		Quality:       capture.Quality,
+	}
+	return result
+}
+
+func (r *Runner) exchangeCommandsOnce(ctx context.Context) (int, error) {
+	results, err := r.store.CommandResults(20)
+	if err != nil {
+		return 0, fmt.Errorf("load pending command results: %w", err)
+	}
+	response, err := r.cloud.ExchangeCommands(ctx, results)
+	if err != nil {
+		return 0, err
+	}
+	if err := r.store.RemoveCommandResults(response.AcknowledgedCommandIDs); err != nil {
+		return 0, fmt.Errorf("remove acknowledged command results: %w", err)
+	}
+	r.mu.Lock()
+	r.status.LastCommandPoll = time.Now()
+	r.status.LastCommandError = ""
+	r.status.CommandsReceived += int64(len(response.Commands))
+	r.mu.Unlock()
+
+	processed := 0
+	for _, command := range response.Commands {
+		exists, err := r.store.HasCommandResult(command.ID)
+		if err != nil {
+			return processed, fmt.Errorf("check command receipt %s: %w", command.ID, err)
+		}
+		if exists {
+			continue
+		}
+		// Persist a fail-safe receipt before touching the terminal. If the
+		// process stops after the device operation but before the final result
+		// is durable, restart reports an interrupted command instead of silently
+		// asking for another fingerprint capture.
+		if err := r.store.PutCommandResult(model.CommandResult{
+			CommandID: command.ID,
+			State:     "failed",
+			Code:      "execution_interrupted",
+			Message:   "Bridge stopped before command completion could be confirmed",
+		}); err != nil {
+			return processed, fmt.Errorf("persist command receipt %s: %w", command.ID, err)
+		}
+		r.mu.Lock()
+		r.status.ActiveCommandID = command.ID
+		r.status.ActiveCommandType = string(command.Type)
+		r.mu.Unlock()
+		r.log.Info("device_command_started", "device", r.cfg.Hikvision.DeviceID, "commandId", command.ID, "type", command.Type)
+		commandCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		result := r.executeCommand(commandCtx, command)
+		cancel()
+		if err := r.store.PutCommandResult(result); err != nil {
+			return processed, fmt.Errorf("persist command result %s: %w", command.ID, err)
+		}
+		r.mu.Lock()
+		r.status.ActiveCommandID = ""
+		r.status.ActiveCommandType = ""
+		if result.State == "succeeded" {
+			r.status.CommandsSucceeded++
+		} else {
+			r.status.CommandsFailed++
+			r.status.LastCommandError = result.Message
+		}
+		r.mu.Unlock()
+		if result.State == "succeeded" {
+			r.log.Info("device_command_succeeded", "device", r.cfg.Hikvision.DeviceID, "commandId", command.ID, "type", command.Type)
+		} else {
+			r.log.Warn("device_command_failed", "device", r.cfg.Hikvision.DeviceID, "commandId", command.ID, "type", command.Type, "code", result.Code, "error", result.Message)
+		}
+		processed++
+	}
+	return processed, nil
+}
+
+func (r *Runner) commandLoop(ctx context.Context, done chan<- struct{}) {
+	defer func() { done <- struct{}{} }()
+	if r.cloud == nil {
+		<-ctx.Done()
+		return
+	}
+	for {
+		processed, err := r.exchangeCommandsOnce(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		delay := time.Duration(r.cfg.Service.SyncIntervalSeconds) * time.Second
+		if err != nil {
+			r.mu.Lock()
+			r.status.LastCommandPoll = time.Now()
+			r.status.LastCommandError = err.Error()
+			r.mu.Unlock()
+			r.log.Error("device_command_exchange_failed", "device", r.cfg.Hikvision.DeviceID, "error", err)
+			delay = withJitter(15 * time.Second)
+		} else if processed > 0 {
+			delay = 250 * time.Millisecond
+		}
+		if !wait(ctx, delay) {
+			return
+		}
+	}
+}
+
 func (r *Runner) maintenanceLoop(ctx context.Context, done chan<- struct{}) {
 	defer func() { done <- struct{}{} }()
 	prune := func() {
@@ -512,9 +686,10 @@ func (r *Runner) Run(parent context.Context) error {
 	if err != nil {
 		return err
 	}
-	done := make(chan struct{}, 3)
+	done := make(chan struct{}, 4)
 	go r.pollLoop(ctx, done)
 	go r.syncLoop(ctx, done)
+	go r.commandLoop(ctx, done)
 	go r.maintenanceLoop(ctx, done)
 
 	select {
@@ -526,6 +701,7 @@ func (r *Runner) Run(parent context.Context) error {
 			return fmt.Errorf("diagnostics server stopped: %w", err)
 		}
 	}
+	<-done
 	<-done
 	<-done
 	<-done

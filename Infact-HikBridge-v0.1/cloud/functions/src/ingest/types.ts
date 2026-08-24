@@ -46,8 +46,42 @@ export interface IngestEnvelope {
   requestId: string;
   deviceId: string;
   probe: boolean;
+  acceptCommands: boolean;
   status?: BridgeStatus | undefined;
+  commandResults: CommandResult[];
   events: unknown[];
+}
+
+export type DeviceCommandType = "upsert_user" | "enroll_fingerprint";
+
+export interface DeviceCommand {
+  id: string;
+  type: DeviceCommandType;
+  issuedAt: string;
+  expiresAt: string;
+  payload: {
+    employeeId: string;
+    employeeNo: string;
+    name: string;
+    fingerPrintId?: number | undefined;
+  };
+}
+
+export interface CommandResult {
+  commandId: string;
+  state: "succeeded" | "failed";
+  code?: string | undefined;
+  message?: string | undefined;
+  output?: {
+    employeeNo?: string | undefined;
+    fingerPrintId?: number | undefined;
+    quality?: number | undefined;
+  } | undefined;
+}
+
+export interface CommandExchangeResult {
+  commands: DeviceCommand[];
+  acknowledgedCommandIds: string[];
 }
 
 export interface BridgeStatus {
@@ -79,6 +113,8 @@ export interface IngestResponse {
   accepted: string[];
   duplicates: string[];
   rejected: RejectedEvent[];
+  commands: DeviceCommand[];
+  acknowledgedCommandIds: string[];
 }
 
 export interface EventWriteContext {
@@ -107,6 +143,12 @@ export interface IngestRepository {
     status: BridgeStatus | undefined,
     context: EventWriteContext,
   ): Promise<void>;
+  exchangeCommands(
+    registration: DeviceRegistration,
+    results: CommandResult[],
+    context: EventWriteContext,
+    deliver: boolean,
+  ): Promise<CommandExchangeResult>;
 }
 
 export interface BridgeSecretProvider {

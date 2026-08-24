@@ -2,7 +2,10 @@ package hikvision
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -217,6 +220,119 @@ func TestSearchUsersToleratesFirmwareSpecificMissingFields(t *testing.T) {
 	}
 	if users[1].FingerprintCount != nil || users[1].CardNo != "" {
 		t.Fatalf("missing firmware fields were fabricated: %+v", users[1])
+	}
+}
+
+func TestUpsertUserUsesDocumentedCreateAndUpdateEndpoints(t *testing.T) {
+	var userExists atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/ISAPI/AccessControl/UserInfo/Search":
+			var payload struct {
+				Condition struct {
+					SearchID string `json:"searchID"`
+				} `json:"UserInfoSearchCond"`
+			}
+			_ = json.NewDecoder(request.Body).Decode(&payload)
+			users := `[]`
+			matches := 0
+			if userExists.Load() {
+				users = `[{"employeeNo":"EMP-17","name":"Kasun"}]`
+				matches = 1
+			}
+			_, _ = response.Write([]byte(`{"UserInfoSearch":{"searchID":"` + payload.Condition.SearchID + `","totalMatches":` + fmt.Sprint(matches) + `,"numOfMatches":` + fmt.Sprint(matches) + `,"UserInfo":` + users + `}}`))
+		case "/ISAPI/AccessControl/UserInfo/Record":
+			if request.Method != http.MethodPost {
+				t.Errorf("create method = %s", request.Method)
+			}
+			userExists.Store(true)
+			_, _ = response.Write([]byte(`{"ResponseStatus":{"statusCode":1,"statusString":"OK"}}`))
+		case "/ISAPI/AccessControl/UserInfo/SetUp":
+			if request.Method != http.MethodPut {
+				t.Errorf("update method = %s", request.Method)
+			}
+			var payload struct {
+				User struct {
+					EmployeeNo string `json:"employeeNo"`
+					VerifyMode string `json:"userVerifyMode"`
+				} `json:"UserInfo"`
+			}
+			_ = json.NewDecoder(request.Body).Decode(&payload)
+			if payload.User.EmployeeNo != "EMP-17" || payload.User.VerifyMode != "fp" {
+				t.Errorf("unexpected user payload: %+v", payload.User)
+			}
+			_, _ = response.Write([]byte(`{"ResponseStatus":{"statusCode":1,"statusString":"OK"}}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	client := testClient(server, time.UTC)
+	if err := client.UpsertUser(context.Background(), UserProvisioning{EmployeeNo: "EMP-17", Name: "Kasun"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.UpsertUser(context.Background(), UserProvisioning{EmployeeNo: "EMP-17", Name: "Kasun Perera"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCaptureAndSetFingerprintKeepTemplateInDeviceRequests(t *testing.T) {
+	// This terminal family returns a 512-byte template encoded as 684 Base64
+	// characters. The ISAPI fingerData field permits up to 768 characters.
+	template := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", 512)))
+	if len(template) != 684 {
+		t.Fatalf("test template length = %d, want 684", len(template))
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/ISAPI/AccessControl/CaptureFingerPrint":
+			body, _ := io.ReadAll(request.Body)
+			if request.Method != http.MethodPost || request.Header.Get("Content-Type") != "application/xml" || !strings.Contains(string(body), "<fingerNo>2</fingerNo>") {
+				t.Errorf("unexpected capture request: method=%s contentType=%s body=%s", request.Method, request.Header.Get("Content-Type"), body)
+			}
+			_, _ = response.Write([]byte(`<CaptureFingerPrint><fingerData>` + template + `</fingerData><fingerNo>2</fingerNo><fingerPrintQuality>87</fingerPrintQuality></CaptureFingerPrint>`))
+		case "/ISAPI/AccessControl/FingerPrint/SetUp":
+			body, _ := io.ReadAll(request.Body)
+			if request.Method != http.MethodPost || !strings.Contains(string(body), template) || !strings.Contains(string(body), `"employeeNo":"EMP-17"`) {
+				t.Errorf("unexpected fingerprint setup request: %s", body)
+			}
+			_, _ = response.Write([]byte(`{"FingerPrintStatus":{"StatusList":[{"id":1,"cardReaderRecvStatus":"1"}]}}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	client := testClient(server, time.UTC)
+	capture, err := client.CaptureFingerprint(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capture.FingerPrintID != 2 || capture.Quality != 87 || capture.FingerData != template {
+		t.Fatalf("unexpected capture: %+v", capture)
+	}
+	if err := client.SetFingerprint(context.Background(), "EMP-17", capture); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetFingerprintRejectsReaderFailureInsideHTTP200(t *testing.T) {
+	template := base64.StdEncoding.EncodeToString([]byte("local-biometric-template"))
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		_, _ = response.Write([]byte(`{"FingerPrintStatus":{"StatusList":[{"id":1,"cardReaderRecvStatus":"3","errorMsg":"poor quality"}]}}`))
+	}))
+	defer server.Close()
+	err := testClient(server, time.UTC).SetFingerprint(context.Background(), "EMP-17", FingerprintCapture{
+		FingerData: template, FingerPrintID: 2, Quality: 87,
+	})
+	if err == nil || !strings.Contains(err.Error(), "poor quality") {
+		t.Fatalf("expected reader failure, got %v", err)
+	}
+}
+
+func TestDeviceResponseStatusRejectsApplicationFailureInsideHTTP200(t *testing.T) {
+	err := validateDeviceResponseStatus([]byte(`{"statusCode":5,"statusString":"Invalid Format","subStatusCode":"badJsonFormat","errorCode":1342177282}`))
+	if err == nil || !strings.Contains(err.Error(), "Invalid Format") || !strings.Contains(err.Error(), "badJsonFormat") {
+		t.Fatalf("expected bounded device status error, got %v", err)
 	}
 }
 

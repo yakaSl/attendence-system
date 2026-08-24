@@ -12,6 +12,7 @@ import type {
 
 const DEFAULT_EARLY_WINDOW_MINUTES = 6 * 60;
 const DEFAULT_LATE_WINDOW_MINUTES = 12 * 60;
+const DUPLICATE_PUNCH_WINDOW_MILLISECONDS = 60 * 1000;
 
 interface PunchSelection {
   firstIn: Temporal.Instant | null;
@@ -89,6 +90,10 @@ function comparePunches(left: AttendancePunch, right: AttendancePunch): number {
   return time === 0 ? left.id.localeCompare(right.id) : time;
 }
 
+function duplicateGroup(punch: AttendancePunch, mode: ShiftDefinition["punchMode"]): string {
+  return mode === "explicit_status" ? punch.direction : "first_last";
+}
+
 function selectPunches(punches: AttendancePunch[], mode: ShiftDefinition["punchMode"], window: ShiftWindow): PunchSelection {
   const inWindow: AttendancePunch[] = [];
   let ignoredOutsideWindow = 0;
@@ -106,14 +111,16 @@ function selectPunches(punches: AttendancePunch[], mode: ShiftDefinition["punchM
   inWindow.sort(comparePunches);
   const unique: AttendancePunch[] = [];
   const duplicateIds: string[] = [];
-  const seen = new Set<string>();
+  const lastSeenByGroup = new Map<string, number>();
   for (const punch of inWindow) {
-    const key = `${Temporal.Instant.from(punch.occurredAt).epochNanoseconds}:${punch.direction}`;
-    if (seen.has(key)) {
+    const occurredAt = Number(Temporal.Instant.from(punch.occurredAt).epochMilliseconds);
+    const group = duplicateGroup(punch, mode);
+    const lastSeen = lastSeenByGroup.get(group);
+    lastSeenByGroup.set(group, occurredAt);
+    if (lastSeen !== undefined && occurredAt - lastSeen <= DUPLICATE_PUNCH_WINDOW_MILLISECONDS) {
       duplicateIds.push(punch.id);
       continue;
     }
-    seen.add(key);
     unique.push(punch);
   }
 
@@ -317,6 +324,6 @@ export function calculateAttendance(input: AttendanceCalculationInput): Attendan
     adjustmentIds: adjustments.map((adjustment) => adjustment.id),
     sourceEventIds: selected.sourceEventIds,
     exceptions: [...exceptions].sort(),
-    calculationVersion: "attendance-v1",
+    calculationVersion: "attendance-v2",
   };
 }

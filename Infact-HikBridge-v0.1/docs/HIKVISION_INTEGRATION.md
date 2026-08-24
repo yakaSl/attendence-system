@@ -13,10 +13,18 @@ GET  /ISAPI/System/deviceInfo?format=json
 GET  /ISAPI/System/time?format=json
 GET  /ISAPI/AccessControl/UserInfo/Count?format=json
 POST /ISAPI/AccessControl/UserInfo/Search?format=json
+POST /ISAPI/AccessControl/UserInfo/Record?format=json
+PUT  /ISAPI/AccessControl/UserInfo/SetUp?format=json
+POST /ISAPI/AccessControl/CaptureFingerPrint
+POST /ISAPI/AccessControl/FingerPrint/SetUp?format=json
 POST /ISAPI/AccessControl/AcsEvent?format=json
 ```
 
 The event search requests access-control major type `5` and paginates at no more than 30 matches per page. Pagination stops from device-reported total/count/status and protects against non-advancing or inconsistent pages.
+
+Employee provisioning first searches by `EmployeeNoList`, then creates with `UserInfo/Record` or updates with `UserInfo/SetUp`. Fingerprint enrollment asks the terminal to capture one finger slot, validates the returned base64 template against the reported device limits, and immediately submits it to `FingerPrint/SetUp` for reader 1. A 2xx response is not assumed to mean reader success: `FingerPrintStatus.StatusList.cardReaderRecvStatus` must report `1` when present.
+
+The fingerprint template exists only in bridge process memory and the two LAN requests. It is not written to the local queue, logs, Firestore command/result documents, or dashboard. Only employee number, finger slot, terminal-reported quality, state, and a bounded safe error are retained.
 
 ## Authentication and transport
 
@@ -54,6 +62,10 @@ Automated tests cover:
 - malformed timestamps with raw preservation;
 - event identity stability;
 - device response size/error handling.
+- employee create/update endpoint selection;
+- XML fingerprint capture parsing and base64 bounds;
+- reader-level fingerprint setup failures returned inside HTTP 200;
+- durable, acknowledged command results without biometric data.
 
 Add a sanitized fixture whenever a supported firmware produces a materially different response. Remove names, employee numbers, card values, serials, IPs, and credentials before committing it.
 

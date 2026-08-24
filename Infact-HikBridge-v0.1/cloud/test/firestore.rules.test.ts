@@ -43,6 +43,13 @@ async function seed(): Promise<void> {
     await setDoc(doc(db, "organizations/org-a/employees/employee-1"), { employeeCode: "EMP0017", name: "Kasun" });
     await setDoc(doc(db, "organizations/org-a/attendanceEvents/event-1"), { source: "hikvision", employeeNo: "17" });
     await setDoc(doc(db, "organizations/org-a/devices/device-1"), { name: "Main Entrance", enabled: true });
+    await setDoc(doc(db, "organizations/org-a/devices/device-1/commands/command-1"), { type: "enroll_fingerprint", state: "queued" });
+    await setDoc(doc(db, "organizations/org-a/devices/device-1/commandLocks/fingerprint"), { commandId: "command-1" });
+    await setDoc(doc(db, "organizations/org-a/deviceEnrollments/enrollment-1"), { employeeId: "employee-1", state: "queued" });
+    await setDoc(doc(db, "organizations/org-a/employeeCodeRegistry/code-1"), { employeeId: "employee-1" });
+    await setDoc(doc(db, "organizations/org-a/employeeCreationAudits/audit-1"), { employeeId: "employee-1" });
+    await setDoc(doc(db, "organizations/org-a/employeeDepartmentChangeAudits/audit-1"), { employeeId: "employee-1" });
+    await setDoc(doc(db, "organizations/org-a/departments/operations"), { name: "Operations" });
     await setDoc(doc(db, "organizations/org-a/shifts/NORMAL"), { name: "Normal Shift" });
     await setDoc(doc(db, "bridgeDeviceRegistry/device-1"), { secretVersionNames: ["secret"] });
     await setDoc(doc(db, "_bridgeCredentials/device-1"), { secret: "must-never-be-readable" });
@@ -151,14 +158,39 @@ describe("Firestore tenant and role isolation", () => {
     await assertFails(getDoc(doc(viewer, "organizations/org-b")));
   });
 
-  it("allows HR employee writes but denies viewer and cross-tenant writes", async () => {
+  it("requires server callables for employee mutations", async () => {
     await seed();
     const hr = environment.authenticatedContext("hr-a").firestore();
     const viewer = environment.authenticatedContext("viewer-a").firestore();
     const otherTenant = environment.authenticatedContext("user-b").firestore();
-    await assertSucceeds(setDoc(doc(hr, "organizations/org-a/employees/employee-2"), { name: "Nimali" }));
+    await assertFails(updateDoc(doc(hr, "organizations/org-a/employees/employee-1"), { name: "Kasun Perera" }));
+    await assertFails(setDoc(doc(hr, "organizations/org-a/employees/employee-2"), { name: "Nimali" }));
     await assertFails(setDoc(doc(viewer, "organizations/org-a/employees/employee-3"), { name: "Denied" }));
     await assertFails(setDoc(doc(otherTenant, "organizations/org-a/employees/employee-4"), { name: "Denied" }));
+  });
+
+  it("allows department reads but requires audited server APIs for writes", async () => {
+    await seed();
+    const hr = environment.authenticatedContext("hr-a").firestore();
+    await assertSucceeds(getDoc(doc(hr, "organizations/org-a/departments/operations")));
+    await assertFails(setDoc(doc(hr, "organizations/org-a/departments/finance"), { name: "Finance" }));
+    await assertFails(updateDoc(doc(hr, "organizations/org-a/departments/operations"), { name: "New Operations" }));
+  });
+
+  it("shows enrollment status only to HR and hides command, lock, and code registry data", async () => {
+    await seed();
+    const hr = environment.authenticatedContext("hr-a").firestore();
+    const manager = environment.authenticatedContext("manager-a").firestore();
+    const platform = environment.authenticatedContext("platform", { platformAdmin: true }).firestore();
+    await assertSucceeds(getDoc(doc(hr, "organizations/org-a/deviceEnrollments/enrollment-1")));
+    await assertSucceeds(getDoc(doc(hr, "organizations/org-a/employeeCreationAudits/audit-1")));
+    await assertSucceeds(getDoc(doc(hr, "organizations/org-a/employeeDepartmentChangeAudits/audit-1")));
+    await assertFails(getDoc(doc(manager, "organizations/org-a/employeeDepartmentChangeAudits/audit-1")));
+    await assertFails(getDoc(doc(manager, "organizations/org-a/deviceEnrollments/enrollment-1")));
+    await assertFails(getDoc(doc(hr, "organizations/org-a/devices/device-1/commands/command-1")));
+    await assertFails(getDoc(doc(platform, "organizations/org-a/devices/device-1/commandLocks/fingerprint")));
+    await assertFails(getDoc(doc(hr, "organizations/org-a/employeeCodeRegistry/code-1")));
+    await assertFails(setDoc(doc(hr, "organizations/org-a/deviceEnrollments/direct"), { state: "enrolled" }));
   });
 
   it("prevents every browser role from creating or mutating raw events", async () => {

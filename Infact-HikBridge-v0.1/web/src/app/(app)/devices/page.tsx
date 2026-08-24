@@ -1,31 +1,30 @@
 "use client";
 
-import { Check, Copy, KeyRound, Plus, Power, RotateCw, Wifi, WifiOff } from "lucide-react";
-import { useCallback, useMemo, useState, type FormEvent } from "react";
+import { Check, Copy, KeyRound, MapPin, Plus, Power, RotateCw, Wifi, WifiOff } from "lucide-react";
+import { useCallback, useState, type FormEvent } from "react";
 
 import { Button, EmptyState, ErrorState, LoadingState, Modal, PageHeader, Panel, RoleGate, StatusBadge } from "@/components/ui";
 import { useAuth } from "@/lib/auth/auth-provider";
 import { useData } from "@/lib/data/data-provider";
-import type { Device, Employee } from "@/lib/data/types";
-import { provisionDevice, rotateDeviceCredential, setDeviceEnabled } from "@/lib/firebase/actions";
-import { relativeTime, todayKey } from "@/lib/format";
+import type { Branch, Device } from "@/lib/data/types";
+import { createBranch, provisionDevice, rotateDeviceCredential, setDeviceEnabled } from "@/lib/firebase/actions";
+import { relativeTime } from "@/lib/format";
+import { slugifyIdentifier } from "@/lib/onboarding";
 import { useAsyncData } from "@/lib/use-async-data";
 
-interface DeviceData { devices: Device[]; employees: Employee[] }
+interface DeviceData { devices: Device[]; branches: Branch[] }
 
 export default function DevicesPage() {
   const { user } = useAuth();
-  const { repository, organization } = useData();
+  const { repository } = useData();
   const load = useCallback(async (): Promise<DeviceData> => {
     const organizationId = user?.organizationId ?? "";
-    const [devices, employees] = await Promise.all([repository.getDevices(organizationId), repository.getEmployees(organizationId, todayKey(organization?.timezone))]);
-    return { devices, employees };
-  }, [organization?.timezone, repository, user?.organizationId]);
+    const [devices, branches] = await Promise.all([repository.getDevices(organizationId), repository.getBranches(organizationId)]);
+    return { devices, branches };
+  }, [repository, user?.organizationId]);
   const { data, loading, error, refresh } = useAsyncData(load);
-  const branches = useMemo(() => {
-    const map = new Map((data?.employees ?? []).filter((employee) => employee.branchId).map((employee) => [employee.branchId as string, employee.branchName]));
-    return [...map].sort((left, right) => left[1].localeCompare(right[1]));
-  }, [data]);
+  const branches = (data?.branches ?? []).filter((branch) => branch.status === "active");
+  const [addingBranch, setAddingBranch] = useState(false);
   const [provisioning, setProvisioning] = useState(false);
   const [credential, setCredential] = useState<{ deviceId: string; bridgeKey: string; graceMinutes?: number } | null>(null);
   const [busyDevice, setBusyDevice] = useState<string | null>(null);
@@ -48,8 +47,13 @@ export default function DevicesPage() {
 
   return (
     <>
-      <PageHeader eyebrow="Bridge operations" title="Devices" description="Monitor Hikvision terminal connectivity and manage bridge enrollment without exposing stored secrets." actions={canManage ? <Button onClick={() => setProvisioning(true)}><Plus size={14} />Provision device</Button> : undefined} />
-      <div className="device-summary-line"><span><i data-status="online" />{data?.devices.filter((device) => device.connectionStatus === "online").length ?? 0} online</span><span><i data-status="offline" />{data?.devices.filter((device) => device.connectionStatus === "offline").length ?? 0} offline</span><span><i data-status="disabled" />{data?.devices.filter((device) => device.connectionStatus === "disabled").length ?? 0} disabled</span></div>
+      <PageHeader
+        eyebrow="Bridge operations"
+        title="Devices"
+        description="Monitor Hikvision terminal connectivity and manage bridge enrollment without exposing stored secrets."
+        actions={canManage ? <><Button variant="secondary" onClick={() => setAddingBranch(true)}><MapPin size={14} />Add branch</Button><Button onClick={() => setProvisioning(true)}><Plus size={14} />Provision device</Button></> : undefined}
+      />
+      <div className="device-summary-line"><span><i data-status="online" />{data?.devices.filter((device) => device.connectionStatus === "online").length ?? 0} online</span><span><i data-status="offline" />{data?.devices.filter((device) => device.connectionStatus === "offline").length ?? 0} offline</span><span><i data-status="disabled" />{data?.devices.filter((device) => device.connectionStatus === "disabled").length ?? 0} disabled</span><span><MapPin size={11} />{branches.length} {branches.length === 1 ? "branch" : "branches"}</span></div>
       <Panel title="Registered bridges" description="Heartbeat data comes from authenticated ingestion requests">
         {loading ? <LoadingState label="Loading devices" /> : error ? <ErrorState message={error} /> : !data || data.devices.length === 0 ? <EmptyState title="No bridges registered" message="Provision a bridge and install its one-time credential on the customer PC." /> : (
           <div className="device-list">{data.devices.map((device) => <article className="device-row" key={device.id}>
@@ -66,6 +70,7 @@ export default function DevicesPage() {
         )}
       </Panel>
       <RoleGate role={user?.role ?? "viewer"} allowed={["organizationOwner", "hrAdmin"]}>
+        <BranchModal open={addingBranch} organizationId={user?.organizationId ?? ""} onClose={() => setAddingBranch(false)} onCreated={() => { setAddingBranch(false); refresh(); }} />
         <ProvisionModal open={provisioning} organizationId={user?.organizationId ?? ""} branches={branches} onClose={() => setProvisioning(false)} onProvisioned={(result) => { setProvisioning(false); setCredential(result); refresh(); }} />
       </RoleGate>
       <CredentialModal credential={credential} onClose={() => setCredential(null)} />
@@ -73,10 +78,42 @@ export default function DevicesPage() {
   );
 }
 
-function ProvisionModal({ open, organizationId, branches, onClose, onProvisioned }: { open: boolean; organizationId: string; branches: [string, string][]; onClose(): void; onProvisioned(result: { deviceId: string; bridgeKey: string }): void }) {
+function BranchModal({ open, organizationId, onClose, onCreated }: { open: boolean; organizationId: string; onClose(): void; onCreated(): void }) {
+  const [name, setName] = useState("");
+  const [branchId, setBranchId] = useState("");
+  const [identifierEdited, setIdentifierEdited] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await createBranch({ organizationId, branchId, name });
+      setName("");
+      setBranchId("");
+      setIdentifierEdited(false);
+      onCreated();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Branch could not be created");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function updateName(value: string) {
+    setName(value);
+    if (!identifierEdited) setBranchId(slugifyIdentifier(value));
+  }
+
+  return <Modal open={open} title="Add branch" description="Create a work location that can be assigned to devices and employees." onClose={onClose}><form className="modal-content" onSubmit={submit}>{error ? <ErrorState message={error} /> : null}<div className="form-grid"><div className="form-field"><label htmlFor="branch-name">Branch name</label><input id="branch-name" required minLength={2} maxLength={100} autoFocus placeholder="Kandy Office" value={name} onChange={(event) => updateName(event.target.value)} /></div><div className="form-field"><label htmlFor="branch-id">Branch ID</label><input id="branch-id" required minLength={2} maxLength={63} pattern="[a-z0-9](?:[a-z0-9]|-){1,62}" placeholder="kandy-office" value={branchId} onChange={(event) => { setIdentifierEdited(true); setBranchId(event.target.value.toLowerCase()); }} /><small>Lowercase letters, numbers, and hyphens. This cannot be changed later.</small></div></div><div className="form-actions"><Button type="button" variant="secondary" onClick={onClose}>Cancel</Button><Button type="submit" disabled={submitting || organizationId === ""}>{submitting ? "Creating…" : "Create branch"}</Button></div></form></Modal>;
+}
+
+function ProvisionModal({ open, organizationId, branches, onClose, onProvisioned }: { open: boolean; organizationId: string; branches: Branch[]; onClose(): void; onProvisioned(result: { deviceId: string; bridgeKey: string }): void }) {
   const [name, setName] = useState(""); const [deviceId, setDeviceId] = useState(""); const [branchId, setBranchId] = useState(""); const [description, setDescription] = useState(""); const [submitting, setSubmitting] = useState(false); const [error, setError] = useState<string | null>(null);
   async function submit(event: FormEvent) { event.preventDefault(); setSubmitting(true); setError(null); try { const result = await provisionDevice({ organizationId, branchId, localDeviceId: deviceId, name, deviceType: "hikvision_ds_k1a8503ef", ...(description ? { description } : {}) }); onProvisioned({ deviceId: result.deviceId, bridgeKey: result.bridgeKey }); } catch (submitError) { setError(submitError instanceof Error ? submitError.message : "Device could not be provisioned"); } finally { setSubmitting(false); } }
-  return <Modal open={open} title="Provision HikBridge" description="A 256-bit bridge credential will be shown exactly once after registration." onClose={onClose}><form className="modal-content" onSubmit={submit}>{error ? <ErrorState message={error} /> : null}<div className="form-grid"><div className="form-field"><label htmlFor="device-id">Bridge device ID</label><input id="device-id" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}" placeholder="office-main-01" value={deviceId} onChange={(event) => setDeviceId(event.target.value)} /></div><div className="form-field"><label htmlFor="device-name">Display name</label><input id="device-name" required placeholder="Main Entrance" value={name} onChange={(event) => setName(event.target.value)} /></div><div className="form-field"><label htmlFor="device-branch">Branch</label><select id="device-branch" required value={branchId} onChange={(event) => setBranchId(event.target.value)}><option value="">Select branch</option>{branches.map(([id, branchName]) => <option key={id} value={id}>{branchName}</option>)}</select></div><div className="form-field"><label htmlFor="device-model">Device model</label><input id="device-model" value="Hikvision DS-K1A8503EF" disabled /></div><div className="form-field form-field-full"><label htmlFor="device-description">Description</label><textarea id="device-description" maxLength={500} value={description} onChange={(event) => setDescription(event.target.value)} /></div></div><div className="form-actions"><Button type="button" variant="secondary" onClick={onClose}>Cancel</Button><Button type="submit" disabled={submitting}>{submitting ? "Provisioning…" : "Provision and create key"}</Button></div></form></Modal>;
+  return <Modal open={open} title="Provision HikBridge" description="A 256-bit bridge credential will be shown exactly once after registration." onClose={onClose}><form className="modal-content" onSubmit={submit}>{error ? <ErrorState message={error} /> : null}{branches.length === 0 ? <EmptyState title="No active branches" message="Add a branch before provisioning a bridge." /> : null}<div className="form-grid"><div className="form-field"><label htmlFor="device-id">Bridge device ID</label><input id="device-id" required pattern="[A-Za-z0-9](?:[A-Za-z0-9._]|-){0,63}" placeholder="office-main-01" value={deviceId} onChange={(event) => setDeviceId(event.target.value)} /></div><div className="form-field"><label htmlFor="device-name">Display name</label><input id="device-name" required placeholder="Main Entrance" value={name} onChange={(event) => setName(event.target.value)} /></div><div className="form-field"><label htmlFor="device-branch">Branch</label><select id="device-branch" required disabled={branches.length === 0} value={branchId} onChange={(event) => setBranchId(event.target.value)}><option value="">Select branch</option>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></div><div className="form-field"><label htmlFor="device-model">Device model</label><input id="device-model" value="Hikvision DS-K1A8503EF" disabled /></div><div className="form-field form-field-full"><label htmlFor="device-description">Description</label><textarea id="device-description" maxLength={500} value={description} onChange={(event) => setDescription(event.target.value)} /></div></div><div className="form-actions"><Button type="button" variant="secondary" onClick={onClose}>Cancel</Button><Button type="submit" disabled={submitting || branches.length === 0}>{submitting ? "Provisioning…" : "Provision and create key"}</Button></div></form></Modal>;
 }
 
 function CredentialModal({ credential, onClose }: { credential: { deviceId: string; bridgeKey: string; graceMinutes?: number } | null; onClose(): void }) {

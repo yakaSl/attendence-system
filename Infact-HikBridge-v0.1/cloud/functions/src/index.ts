@@ -8,12 +8,15 @@ import {
 } from "./attendance/functions.js";
 import { processAttendanceRecalculationJobs } from "./attendance/recalculation-jobs.js";
 import { recalculateHolidayChange, recalculateLeaveChange } from "./attendance/source-change-triggers.js";
+import { createBranch, deleteBranch } from "./branches/management.js";
+import { createDepartment } from "./departments/management.js";
 import {
   provisionDevice,
   rotateDeviceCredential,
   setDeviceEnabled,
 } from "./devices/provisioning.js";
 import { mapDeviceIdentity } from "./employees/mapping.js";
+import { createEmployee, requestFingerprintEnrollment, updateEmployeeDepartment } from "./employees/management.js";
 import { firestore } from "./firebase.js";
 import { IngestError, errorBody } from "./ingest/errors.js";
 import { FirestoreIngestRepository } from "./ingest/firestore-repository.js";
@@ -92,10 +95,15 @@ export const hikbridgeV1Events = onRequest({
 export {
   assignEmployeeShift,
   bootstrapOrganization,
+  createBranch,
+  createDepartment,
+  createEmployee,
   createManualAdjustment,
+  deleteBranch,
   mapDeviceIdentity,
   processAttendanceRecalculationJobs,
   provisionDevice,
+  requestFingerprintEnrollment,
   recalculateAttendanceDay,
   recalculateHolidayChange,
   recalculateLeaveChange,
@@ -103,4 +111,5 @@ export {
   rotateDeviceCredential,
   saveShift,
   setDeviceEnabled,
+  updateEmployeeDepartment,
 };

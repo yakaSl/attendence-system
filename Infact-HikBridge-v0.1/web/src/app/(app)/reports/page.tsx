@@ -5,16 +5,19 @@ import { Download, FileSpreadsheet, ShieldCheck } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
 import { AttendanceTable } from "@/components/attendance-table";
+import { SortableHeader } from "@/components/sortable-header";
 import { Button, EmptyState, ErrorState, LoadingState, PageHeader, Panel } from "@/components/ui";
 import { useAuth } from "@/lib/auth/auth-provider";
 import { useData } from "@/lib/data/data-provider";
 import { attendanceCsv, monthlySummaryCsv, summarizeAttendance } from "@/lib/data/reporting";
-import type { AttendanceDay, Department, Employee, ReportFilters, Shift } from "@/lib/data/types";
+import type { AttendanceDay, Department, Employee, ReportFilters, ReportSummaryRow, Shift } from "@/lib/data/types";
 import { formatMinutes, todayKey } from "@/lib/format";
+import { nextSort, sortRows, type SortState } from "@/lib/sorting";
 import { useAsyncData } from "@/lib/use-async-data";
 
 type ReportType = "daily" | "monthly_employee" | "monthly_company" | "late" | "overtime" | "absent" | "missing";
 interface ReportData { days: AttendanceDay[]; employees: Employee[]; departments: Department[]; shifts: Shift[] }
+type SummarySort = "employee" | "department" | "working" | "present" | "absent" | "leave" | "lateDays" | "lateTime" | "earlyDays" | "earlyTime" | "overtime" | "worked";
 
 const reportLabels: Record<ReportType, string> = {
   daily: "Daily attendance",
@@ -31,6 +34,7 @@ export default function ReportsPage() {
   const { repository, organization } = useData();
   const today = todayKey(organization?.timezone);
   const [type, setType] = useState<ReportType>("monthly_company");
+  const [summarySort, setSummarySort] = useState<SortState<SummarySort>>({ key: "employee", direction: "asc" });
   const [from, setFrom] = useState(`${today.slice(0, 7)}-01`);
   const [to, setTo] = useState(today);
   const [employeeId, setEmployeeId] = useState(""); const [departmentId, setDepartmentId] = useState(""); const [branchId, setBranchId] = useState(""); const [shiftId, setShiftId] = useState("");
@@ -53,6 +57,21 @@ export default function ReportsPage() {
     return true;
   }), [data, type]);
   const summary = useMemo(() => summarizeAttendance(reportDays), [reportDays]);
+  const sortedSummary = useMemo(() => sortRows<ReportSummaryRow, SummarySort>(summary, summarySort, {
+    employee: (row) => row.employeeName,
+    department: (row) => row.departmentName,
+    working: (row) => row.workingDays,
+    present: (row) => row.presentDays,
+    absent: (row) => row.absentDays,
+    leave: (row) => row.leaveDays,
+    lateDays: (row) => row.lateDays,
+    lateTime: (row) => row.totalLateMinutes,
+    earlyDays: (row) => row.earlyLeaveDays,
+    earlyTime: (row) => row.earlyLeaveMinutes,
+    overtime: (row) => row.overtimeMinutes,
+    worked: (row) => row.totalWorkedMinutes,
+  }), [summary, summarySort]);
+  const requestSummarySort = (key: SummarySort) => setSummarySort((current) => nextSort(current, key));
   const summaryMode = type === "monthly_company" || type === "monthly_employee";
 
   function download() {
@@ -76,7 +95,7 @@ export default function ReportsPage() {
       <div className="report-assurance"><ShieldCheck size={15} /><span>Interactive query cap: 31 days and 5,000 calculated rows. CSV contains derived attendance only—never bridge credentials or raw private payloads.</span></div>
       <Panel title={reportLabels[type]} description={`${reportDays.length} calculated rows · ${summary.length} employees`} action={<span className="report-total"><FileSpreadsheet size={14} />{summary.reduce((sum, row) => sum + row.totalWorkedMinutes, 0) ? formatMinutes(summary.reduce((sum, row) => sum + row.totalWorkedMinutes, 0)) : "No worked time"}</span>}>
         {loading ? <LoadingState label="Preparing report" /> : error ? <ErrorState message={error} /> : reportDays.length === 0 ? <EmptyState title="No report rows" message="No calculated attendance matches the selected report and filters." /> : summaryMode ? (
-          <div className="table-wrap"><table className="data-table responsive-table"><thead><tr><th>Employee</th><th>Department</th><th>Working</th><th>Present</th><th>Absent</th><th>Leave</th><th>Late days</th><th>Late time</th><th>Early days</th><th>Early time</th><th>OT</th><th>Worked</th></tr></thead><tbody>{summary.map((row) => <tr key={row.employeeId}><td data-label="Employee" data-primary="true"><span className="cell-copy"><strong>{row.employeeName}</strong><small>{row.employeeCode}</small></span></td><td data-label="Department">{row.departmentName}</td><td data-label="Working days">{row.workingDays}</td><td data-label="Present" className="positive-text">{row.presentDays}</td><td data-label="Absent" className={row.absentDays ? "danger-text" : "muted"}>{row.absentDays}</td><td data-label="Leave">{row.leaveDays}</td><td data-label="Late days">{row.lateDays}</td><td data-label="Late time" className="warning-text">{formatMinutes(row.totalLateMinutes, true)}</td><td data-label="Early days">{row.earlyLeaveDays}</td><td data-label="Early time">{formatMinutes(row.earlyLeaveMinutes, true)}</td><td data-label="Overtime" className="positive-text">{formatMinutes(row.overtimeMinutes, true)}</td><td data-label="Worked">{formatMinutes(row.totalWorkedMinutes, true)}</td></tr>)}</tbody></table></div>
+          <div className="table-wrap"><table className="data-table responsive-table"><thead><tr><SortableHeader column="employee" label="Employee" sort={summarySort} onSort={requestSummarySort} /><SortableHeader column="department" label="Department" sort={summarySort} onSort={requestSummarySort} /><SortableHeader column="working" label="Working" sort={summarySort} onSort={requestSummarySort} /><SortableHeader column="present" label="Present" sort={summarySort} onSort={requestSummarySort} /><SortableHeader column="absent" label="Absent" sort={summarySort} onSort={requestSummarySort} /><SortableHeader column="leave" label="Leave" sort={summarySort} onSort={requestSummarySort} /><SortableHeader column="lateDays" label="Late days" sort={summarySort} onSort={requestSummarySort} /><SortableHeader column="lateTime" label="Late time" sort={summarySort} onSort={requestSummarySort} /><SortableHeader column="earlyDays" label="Early days" sort={summarySort} onSort={requestSummarySort} /><SortableHeader column="earlyTime" label="Early time" sort={summarySort} onSort={requestSummarySort} /><SortableHeader column="overtime" label="OT" sort={summarySort} onSort={requestSummarySort} /><SortableHeader column="worked" label="Worked" sort={summarySort} onSort={requestSummarySort} /></tr></thead><tbody>{sortedSummary.map((row) => <tr key={row.employeeId}><td data-label="Employee" data-primary="true"><span className="cell-copy"><strong>{row.employeeName}</strong><small>{row.employeeCode}</small></span></td><td data-label="Department">{row.departmentName}</td><td data-label="Working days">{row.workingDays}</td><td data-label="Present" className="positive-text">{row.presentDays}</td><td data-label="Absent" className={row.absentDays ? "danger-text" : "muted"}>{row.absentDays}</td><td data-label="Leave">{row.leaveDays}</td><td data-label="Late days">{row.lateDays}</td><td data-label="Late time" className="warning-text">{formatMinutes(row.totalLateMinutes, true)}</td><td data-label="Early days">{row.earlyLeaveDays}</td><td data-label="Early time">{formatMinutes(row.earlyLeaveMinutes, true)}</td><td data-label="Overtime" className="positive-text">{formatMinutes(row.overtimeMinutes, true)}</td><td data-label="Worked">{formatMinutes(row.totalWorkedMinutes, true)}</td></tr>)}</tbody></table></div>
         ) : <AttendanceTable days={reportDays} />}
       </Panel>
     </>
