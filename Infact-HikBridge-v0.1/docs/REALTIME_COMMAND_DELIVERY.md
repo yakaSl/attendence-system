@@ -29,7 +29,7 @@ These numbers are workload estimates, not a guarantee that a project remains ins
 ## Enrollment latency and evidence protection
 
 - The callable writes the command and wake signal in the same user request; there is no extra Firestore-trigger cold start.
-- A failed signal is retried three times. The Firestore command remains durable and disconnected fallback polling expands from seconds to a maximum of five minutes.
+- A failed signal is retried three times. The Firestore command remains durable and disconnected fallback polling starts at 15 seconds and caps at 30 seconds (plus jitter). This polling runs only while the realtime stream is unavailable, keeping outage-mode enrollment latency bounded without restoring healthy-mode idle calls.
 - The bridge performs an attendance poll immediately before fingerprint capture and another immediately afterward. A punch made during the terminal's exclusive capture window remains on the terminal and is collected after capture.
 - A successful terminal-user upsert is cached locally. A following fingerprint command with the same employee number and name skips the duplicate terminal lookup/upsert. If fingerprint assignment proves that the user was manually removed, HikBridge recreates the user and retries the assignment with the already captured in-memory template.
 - Biometric template data remains in bridge memory and local terminal requests only. It is not written to RTDB, Firestore, logs, or the local provisioning cache.

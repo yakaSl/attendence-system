@@ -451,6 +451,11 @@ var retrySchedule = []time.Duration{
 	5 * time.Minute,
 }
 
+const (
+	realtimeFallbackInitial = 15 * time.Second
+	realtimeFallbackMaximum = 30 * time.Second
+)
+
 func withJitter(delay time.Duration) time.Duration {
 	span := delay / 5
 	if span <= 0 {
@@ -809,7 +814,7 @@ func (r *Runner) commandLoop(ctx context.Context, done chan<- struct{}) {
 
 	connected := false
 	startupReconciled := false
-	fallbackDelay := 15 * time.Second
+	fallbackDelay := realtimeFallbackInitial
 	var timer *time.Timer
 	var timerC <-chan time.Time
 	resetTimer(&timer, &timerC, 0)
@@ -828,7 +833,7 @@ func (r *Runner) commandLoop(ctx context.Context, done chan<- struct{}) {
 			}
 			r.mu.Unlock()
 			if state {
-				fallbackDelay = 15 * time.Second
+				fallbackDelay = realtimeFallbackInitial
 				if startupReconciled {
 					stopTimer(timer, &timerC)
 				}
@@ -846,7 +851,7 @@ func (r *Runner) commandLoop(ctx context.Context, done chan<- struct{}) {
 			}
 			if err != nil {
 				r.recordCommandExchangeError(err)
-				resetTimer(&timer, &timerC, withJitter(15*time.Second))
+				resetTimer(&timer, &timerC, withJitter(realtimeFallbackInitial))
 				continue
 			}
 			if processed > 0 {
@@ -856,7 +861,7 @@ func (r *Runner) commandLoop(ctx context.Context, done chan<- struct{}) {
 				continue
 			}
 			if !connected {
-				fallbackDelay = min(fallbackDelay*2, 5*time.Minute)
+				fallbackDelay = min(fallbackDelay*2, realtimeFallbackMaximum)
 				resetTimer(&timer, &timerC, withJitter(fallbackDelay))
 			}
 		}

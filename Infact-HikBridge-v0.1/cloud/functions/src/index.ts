@@ -36,12 +36,11 @@ import {
 import { activateManualSubscription, listPlatformSubscriptions } from "./billing/platform.js";
 import { getCurrentSubscription } from "./billing/access.js";
 import { dodoPaymentsWebhook } from "./billing/webhook.js";
-import { RealtimeSessionService } from "./realtime/session.js";
+import { hikbridgeV1Session } from "./realtime/function.js";
 
 const ingestRepository = new FirestoreIngestRepository(firestore);
 const bridgeSecrets = new SecretManagerBridgeSecrets();
 const ingestion = new IngestionService(ingestRepository, bridgeSecrets);
-const realtimeSessions = new RealtimeSessionService(ingestRepository, bridgeSecrets);
 
 function bridgeVersion(headers: HeaderSource): string | undefined {
   const value = headers["x-hikbridge-agent-version"];
@@ -104,44 +103,6 @@ export const hikbridgeV1Events = onRequest({
   }
 });
 
-export const hikbridgeV1Session = onRequest({
-  region: "asia-south1",
-  timeoutSeconds: 30,
-  memory: "256MiB",
-  maxInstances: 20,
-  concurrency: 40,
-  invoker: "public",
-}, async (request, response) => {
-  response.set("Cache-Control", "no-store");
-  response.set("Content-Type", "application/json; charset=utf-8");
-  if (request.method !== "POST") {
-    response.set("Allow", "POST");
-    response.status(405).json(errorBody(new IngestError(405, "method_not_allowed", "Use POST for HikBridge realtime sessions")));
-    return;
-  }
-  if (!request.is("application/json") || !Buffer.isBuffer(request.rawBody)) {
-    response.status(415).json(errorBody(new IngestError(415, "invalid_content_type", "Content-Type must be application/json")));
-    return;
-  }
-  const headers = request.headers as HeaderSource;
-  try {
-    const result = await realtimeSessions.create({ headers, rawBody: request.rawBody, now: new Date() });
-    logger.info("hikbridge_realtime_session_created", { deviceId: result.deviceId, organizationId: result.organizationId });
-    response.status(200).json(result);
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      response.status(400).json(errorBody(new IngestError(400, "invalid_request", "Realtime session request is malformed")));
-      return;
-    }
-    if (error instanceof IngestError) {
-      response.status(error.status).json(errorBody(error));
-      return;
-    }
-    logger.error("hikbridge_realtime_session_failed", { error });
-    response.status(500).json(errorBody(new IngestError(500, "internal", "Realtime session creation failed")));
-  }
-});
-
 export {
   activateManualSubscription,
   assignEmployeeShift,
@@ -157,6 +118,7 @@ export {
   dodoPaymentsWebhook,
   getSaasCatalog,
   getCurrentSubscription,
+  hikbridgeV1Session,
   listPlatformSubscriptions,
   mapDeviceIdentity,
   processAttendanceRecalculationJobs,
