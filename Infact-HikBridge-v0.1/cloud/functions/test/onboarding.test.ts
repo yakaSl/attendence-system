@@ -90,10 +90,13 @@ describe("branch creation input", () => {
 });
 
 describe("device removal input", () => {
-  it("accepts a safe bridge device identifier and rejects extra fields", () => {
+  it("accepts a safe bridge device and optional organization identifier", () => {
     expect(removeDeviceSchema.parse({ deviceId: "office-main-01" })).toEqual({ deviceId: "office-main-01" });
+    expect(removeDeviceSchema.parse({ deviceId: "office-main-01", organizationId: "northwind-labs" }))
+      .toEqual({ deviceId: "office-main-01", organizationId: "northwind-labs" });
     expect(removeDeviceSchema.safeParse({ deviceId: "../office-main-01" }).success).toBe(false);
-    expect(removeDeviceSchema.safeParse({ deviceId: "office-main-01", organizationId: "another-org" }).success).toBe(false);
+    expect(removeDeviceSchema.safeParse({ deviceId: "office-main-01", organizationId: "../another-org" }).success).toBe(false);
+    expect(removeDeviceSchema.safeParse({ deviceId: "office-main-01", unexpected: true }).success).toBe(false);
   });
 });
 

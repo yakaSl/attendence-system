@@ -26,7 +26,9 @@ export const deviceActionSchema = z.object({
   deviceId: z.string().regex(deviceIdPattern),
 }).strict();
 
-export const removeDeviceSchema = deviceActionSchema;
+export const removeDeviceSchema = deviceActionSchema.extend({
+  organizationId: z.string().min(1).max(128).refine((value) => !value.includes("/"), "Organization ID is invalid").optional(),
+}).strict();
 
 const enabledSchema = deviceActionSchema.extend({ enabled: z.boolean() }).strict();
 
@@ -289,13 +291,17 @@ export class DeviceProvisioningService {
     const deviceId = parsed.data.deviceId;
     const registry = this.db.collection("bridgeDeviceRegistry").doc(deviceId);
     const registrySnapshot = await registry.get();
-    if (!registrySnapshot.exists) {
+    const registryInitiallyPresent = registrySnapshot.exists;
+    const registeredOrganizationId = registrySnapshot.get("organizationId");
+    const organizationId = registrySnapshot.exists ? registeredOrganizationId : parsed.data.organizationId;
+    if (typeof organizationId !== "string" || organizationId.length === 0) {
       throw new HttpsError("not-found", "Device registration does not exist");
     }
-    const organizationId = registrySnapshot.get("organizationId");
-    const deviceDocumentPath = registrySnapshot.get("deviceDocumentPath");
-    if (typeof organizationId !== "string" || organizationId.length === 0 ||
-        deviceDocumentPath !== `organizations/${organizationId}/devices/${deviceId}`) {
+    if (parsed.data.organizationId !== undefined && parsed.data.organizationId !== organizationId) {
+      throw new HttpsError("permission-denied", "The device does not belong to this organization");
+    }
+    const deviceDocumentPath = `organizations/${organizationId}/devices/${deviceId}`;
+    if (registrySnapshot.exists && registrySnapshot.get("deviceDocumentPath") !== deviceDocumentPath) {
       throw new HttpsError("failed-precondition", "Device registration is incomplete");
     }
     await requireOrganizationRole(this.db, authContext, organizationId, ["organizationOwner", "hrAdmin"]);
@@ -311,31 +317,42 @@ export class DeviceProvisioningService {
     // safe, retryable state if a later external cleanup step fails.
     await this.db.runTransaction(async (transaction) => {
       const [latestRegistry, deviceSnapshot] = await transaction.getAll(registry, device);
-      if (latestRegistry === undefined || !latestRegistry.exists ||
-          latestRegistry.get("organizationId") !== organizationId ||
-          latestRegistry.get("deviceDocumentPath") !== device.path) {
+      if (latestRegistry === undefined || deviceSnapshot === undefined) {
+        throw new Error("Device removal transaction did not return every requested document");
+      }
+      if (latestRegistry.exists && (
+        latestRegistry.get("organizationId") !== organizationId ||
+        latestRegistry.get("deviceDocumentPath") !== device.path
+      )) {
         throw new HttpsError("failed-precondition", "Device registration changed during removal");
       }
       const storedName = deviceSnapshot?.get("name");
-      const storedBranchId = latestRegistry.get("branchId");
+      const storedBranchId = latestRegistry.exists ? latestRegistry.get("branchId") : deviceSnapshot.get("branchId");
       const storedSecretResourceName = latestRegistry.get("secretResourceName");
       if (typeof storedName === "string" && storedName.length > 0) deviceName = storedName;
       if (typeof storedBranchId === "string" && storedBranchId.length > 0) branchId = storedBranchId;
       if (typeof storedSecretResourceName === "string" && storedSecretResourceName.length > 0) {
         secretResourceName = storedSecretResourceName;
       }
-      transaction.update(registry, {
+      const deletionState = {
         state: "deleting",
         enabled: false,
+        organizationId,
+        branchId,
+        deviceDocumentPath: device.path,
         deletionRequestedAt: now,
         deletionRequestedBy: authContext.uid,
-      });
-      transaction.set(device, {
-        enabled: false,
-        connectionStatus: "disabled",
-        deletionRequestedAt: now,
-        updatedAt: now,
-      }, { merge: true });
+      };
+      if (latestRegistry.exists) transaction.update(registry, deletionState);
+      else transaction.create(registry, { ...deletionState, recoveredForDeletion: true });
+      if (deviceSnapshot.exists) {
+        transaction.set(device, {
+          enabled: false,
+          connectionStatus: "disabled",
+          deletionRequestedAt: now,
+          updatedAt: now,
+        }, { merge: true });
+      }
     });
 
     if (secretResourceName !== null) {
@@ -366,6 +383,7 @@ export class DeviceProvisioningService {
       deviceName,
       branchId,
       deletedBindings,
+      registryRecoveredForDeletion: !registryInitiallyPresent,
       historicalAttendancePreserved: true,
       actorId: authContext.uid,
       createdAt: Timestamp.now(),

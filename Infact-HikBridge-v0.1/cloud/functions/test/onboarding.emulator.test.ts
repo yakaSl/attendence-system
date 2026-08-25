@@ -285,6 +285,66 @@ run("organization onboarding", () => {
     });
   });
 
+  it("removes an orphaned organization device whose global registry record is missing", async () => {
+    const auth = { uid: "owner-1", token: { email: "owner@example.com" } };
+    await bootstrapOrganizationInFirestore(db, auth, input);
+    const organization = db.doc(`organizations/${input.organizationId}`);
+    const deviceId = "legacy-entrance-01";
+    const device = organization.collection("devices").doc(deviceId);
+    const registry = db.doc(`bridgeDeviceRegistry/${deviceId}`);
+    await Promise.all([
+      device.set({
+        id: deviceId,
+        name: "Legacy Entrance",
+        branchId: input.branchId,
+        enabled: true,
+        connectionStatus: "offline",
+      }),
+      device.collection("commands").doc("command-1").set({ deviceId, state: "queued" }),
+      organization.collection("deviceIdentities").doc("identity-legacy").set({ deviceId }),
+      organization.collection("deviceEnrollments").doc("enrollment-legacy").set({ deviceId }),
+      organization.collection("attendanceEvents").doc("historical-legacy").set({ deviceId }),
+    ]);
+
+    const deletedSecrets: string[] = [];
+    const service = new DeviceProvisioningService(db, {
+      async createSecret() { return [{ name: "unused" }]; },
+      async addSecretVersion() { return [{ name: "unused/versions/1" }]; },
+      async deleteSecret({ name }: { name: string }) { deletedSecrets.push(name); return [{}]; },
+    });
+    const result = await service.remove({ deviceId, organizationId: input.organizationId }, auth);
+
+    const [deletedRegistry, deletedDevice, deletedIdentity, deletedEnrollment, historicalEvent, audits] = await Promise.all([
+      registry.get(),
+      device.get(),
+      organization.collection("deviceIdentities").doc("identity-legacy").get(),
+      organization.collection("deviceEnrollments").doc("enrollment-legacy").get(),
+      organization.collection("attendanceEvents").doc("historical-legacy").get(),
+      organization.collection("deviceDeletionAudits").get(),
+    ]);
+    expect(result).toEqual({
+      deviceId,
+      organizationId: input.organizationId,
+      removed: true,
+      deletedBindings: 2,
+    });
+    expect(deletedSecrets).toEqual([]);
+    expect(deletedRegistry.exists).toBe(false);
+    expect(deletedDevice.exists).toBe(false);
+    expect(deletedIdentity.exists).toBe(false);
+    expect(deletedEnrollment.exists).toBe(false);
+    expect(historicalEvent.exists).toBe(true);
+    expect(audits.docs).toHaveLength(1);
+    expect(audits.docs[0]?.data()).toMatchObject({
+      action: "device_removed",
+      deviceId,
+      deviceName: "Legacy Entrance",
+      registryRecoveredForDeletion: true,
+      historicalAttendancePreserved: true,
+      actorId: "owner-1",
+    });
+  });
+
   it("merges enrollment metadata into the retained registration without changing the source", async () => {
     const auth = { uid: "owner-1", token: { email: "owner@example.com" } };
     await bootstrapOrganizationInFirestore(db, auth, input);

@@ -127,7 +127,7 @@ export function setDeviceEnabled(data: { deviceId: string; enabled: boolean }) {
   return call<typeof data, { deviceId: string; enabled: boolean }>("setDeviceEnabled", data);
 }
 
-export function removeDevice(data: { deviceId: string }) {
+export function removeDevice(data: { deviceId: string; organizationId: string }) {
   if (isDemoMode()) {
     return Promise.resolve({ deviceId: data.deviceId, organizationId: "demo", removed: true as const, deletedBindings: 0 });
   }

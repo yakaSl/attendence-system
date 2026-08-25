@@ -93,7 +93,7 @@ export default function DevicesPage() {
       </RoleGate>
       <CredentialModal credential={credential} onClose={() => setCredential(null)} />
       {mergingIntoDevice ? <MergeDeviceModal target={mergingIntoDevice} devices={data?.devices ?? []} onClose={() => setMergingIntoDevice(null)} /> : null}
-      {removingDevice ? <RemoveDeviceModal device={removingDevice} onClose={() => setRemovingDevice(null)} onRemoved={() => { setRemovingDevice(null); refresh(); }} /> : null}
+      {removingDevice ? <RemoveDeviceModal device={removingDevice} organizationId={user?.organizationId ?? ""} onClose={() => setRemovingDevice(null)} onRemoved={() => { setRemovingDevice(null); refresh(); }} /> : null}
     </>
   );
 }
@@ -170,7 +170,7 @@ function MergeDeviceModal({ target, devices, onClose }: { target: Device; device
   return <Modal open title="Merge duplicate device data" description={`Keep ${target.name} (${target.id}) and copy cloud enrollment data into it.`} onClose={submitting ? () => undefined : onClose}><div className="modal-content">{error ? <ErrorState message={error} /> : null}{result ? <><div className="credential-warning"><Check size={18} /><span><strong>Merge completed</strong><small>{result.mappedIdentities} employee mappings and {result.enrollmentRecords} enrollment records are now attached to {target.id}.</small></span></div><p className="modal-note">Run only the retained installation code and verify several punches. The source registration still exists and can be removed after verification.</p><div className="form-actions"><Button type="button" onClick={onClose}>Done</Button></div></> : candidates.length === 0 ? <EmptyState title="No same-branch duplicate" message="Only another registration in the same branch can be merged into this device." /> : <><div className="form-field"><label htmlFor="merge-source-device">Duplicate installation code to copy from</label><select id="merge-source-device" value={sourceDeviceId} onChange={(event) => setSourceDeviceId(event.target.value)}>{candidates.map((device) => <option key={device.id} value={device.id}>{device.name} · {device.id}</option>)}</select></div><label className="platform-checkbox"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>I confirm both installation codes connect to the same physical Hikvision terminal.</span></label><p className="modal-note">This copies employee-number mappings and enrollment status only. Fingerprint templates remain inside the terminal, and the source registration is not changed.</p><div className="form-actions"><Button type="button" variant="secondary" disabled={submitting} onClick={onClose}>Cancel</Button><Button type="button" disabled={submitting || sourceDeviceId === "" || !confirmed} onClick={merge}>{submitting ? "Merging…" : "Merge enrollment data"}</Button></div></>}</div></Modal>;
 }
 
-function RemoveDeviceModal({ device, onClose, onRemoved }: { device: Device; onClose(): void; onRemoved(): void }) {
+function RemoveDeviceModal({ device, organizationId, onClose, onRemoved }: { device: Device; organizationId: string; onClose(): void; onRemoved(): void }) {
   const [confirmation, setConfirmation] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -183,7 +183,7 @@ function RemoveDeviceModal({ device, onClose, onRemoved }: { device: Device; onC
     setSubmitting(true);
     setError(null);
     try {
-      await removeDevice({ deviceId: device.id });
+      await removeDevice({ deviceId: device.id, organizationId });
       onRemoved();
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "Device could not be removed");
