@@ -174,9 +174,12 @@ function RemoveDeviceModal({ device, onClose, onRemoved }: { device: Device; onC
   const [confirmation, setConfirmation] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const normalizedConfirmation = confirmation.trim().toLowerCase();
+  const confirmationMatches = normalizedConfirmation.length > 0 &&
+    (normalizedConfirmation === device.id.trim().toLowerCase() || normalizedConfirmation === device.name.trim().toLowerCase());
 
   async function remove() {
-    if (confirmation !== device.id) return;
+    if (!confirmationMatches) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -189,5 +192,5 @@ function RemoveDeviceModal({ device, onClose, onRemoved }: { device: Device; onC
     }
   }
 
-  return <Modal open title="Remove device permanently" description="The bridge registration will be revoked and removed. Historical attendance is preserved." onClose={submitting ? () => undefined : onClose}><div className="modal-content">{error ? <ErrorState message={error} /> : null}<div className="delete-summary"><Trash2 size={18} /><span><strong>{device.name}</strong><small>{device.id} · {device.branchName}</small></span></div><p className="modal-note">Stop HikBridge on the client PC first. Removal deletes the device, credential, queued commands, identity mappings, and enrollment state. This cannot be undone.</p><div className="form-field"><label htmlFor="remove-device-confirmation">Type <strong>{device.id}</strong> to confirm</label><input id="remove-device-confirmation" autoFocus autoComplete="off" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></div><div className="form-actions"><Button type="button" variant="secondary" disabled={submitting} onClick={onClose}>Cancel</Button><Button type="button" variant="danger" disabled={submitting || confirmation !== device.id} onClick={remove}>{submitting ? "Removing…" : "Remove device"}</Button></div></div></Modal>;
+  return <Modal open title="Remove device permanently" description="The bridge registration will be revoked and removed. Historical attendance is preserved." onClose={submitting ? () => undefined : onClose}><div className="modal-content">{error ? <ErrorState message={error} /> : null}<div className="delete-summary"><Trash2 size={18} /><span><strong>{device.name}</strong><small>{device.id} · {device.branchName}</small></span></div><p className="modal-note">Stop HikBridge on the client PC first. Removal deletes the device, credential, queued commands, identity mappings, and enrollment state. This cannot be undone.</p><div className="form-field"><label htmlFor="remove-device-confirmation">Type <strong>{device.name}</strong> or <strong>{device.id}</strong> to confirm</label><input id="remove-device-confirmation" autoFocus autoComplete="off" spellCheck={false} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></div><div className="form-actions"><Button type="button" variant="secondary" disabled={submitting} onClick={onClose}>Cancel</Button><Button type="button" variant="danger" disabled={submitting || !confirmationMatches} onClick={remove}>{submitting ? "Removing…" : "Remove device"}</Button></div></div></Modal>;
 }
