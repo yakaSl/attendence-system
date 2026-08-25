@@ -9,6 +9,7 @@ import { requireAuthentication, requireOrganizationRole, type AuthContext } from
 import { assertCreationWithinLimit } from "../billing/entitlements.js";
 import { firestore } from "../firebase.js";
 import { identityKey } from "../ingest/firestore-repository.js";
+import { signalDeviceCommand } from "../realtime/signals.js";
 
 const organizationIdSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/);
 const deviceIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
@@ -52,7 +53,7 @@ export async function createEmployeeInFirestore(
   db: Firestore,
   auth: AuthContext,
   raw: unknown,
-): Promise<{ employeeId: string; commandId: string | null }> {
+): Promise<{ employeeId: string; commandId: string | null; enrollmentId: string | null; deviceId: string | null; organizationId: string }> {
   const parsed = createEmployeeSchema.safeParse(raw);
   if (!parsed.success) throw new HttpsError("invalid-argument", "Employee fields are invalid");
   const input = parsed.data;
@@ -70,6 +71,7 @@ export async function createEmployeeInFirestore(
   const commandId = deviceRegistry === null ? null : randomUUID();
   const now = Timestamp.now();
 
+  let enrollmentId: string | null = null;
   await db.runTransaction(async (transaction) => {
     await assertCreationWithinLimit(
       transaction,
@@ -134,6 +136,7 @@ export async function createEmployeeInFirestore(
 
     if (input.deviceId !== undefined && input.deviceId !== null && commandId !== null) {
       const key = identityKey(input.deviceId, input.employeeCode);
+      enrollmentId = key;
       transaction.set(organization.collection("deviceIdentities").doc(key), {
         organizationId: input.organizationId,
         branchId: input.branchId,
@@ -173,7 +176,13 @@ export async function createEmployeeInFirestore(
       }, { merge: true });
     }
   });
-  return { employeeId, commandId };
+  return {
+    employeeId,
+    commandId,
+    enrollmentId,
+    deviceId: input.deviceId ?? null,
+    organizationId: input.organizationId,
+  };
 }
 
 export async function updateEmployeeDepartmentInFirestore(
@@ -232,7 +241,7 @@ export async function queueFingerprintEnrollment(
   db: Firestore,
   auth: AuthContext,
   raw: unknown,
-): Promise<{ commandId: string; employeeId: string; deviceId: string }> {
+): Promise<{ commandId: string; employeeId: string; deviceId: string; organizationId: string; enrollmentId: string }> {
   const parsed = requestFingerprintEnrollmentSchema.safeParse(raw);
   if (!parsed.success) throw new HttpsError("invalid-argument", "Fingerprint enrollment fields are invalid");
   const input = parsed.data;
@@ -247,6 +256,7 @@ export async function queueFingerprintEnrollment(
   const fingerprintLock = device.collection("commandLocks").doc("fingerprint");
   const now = Timestamp.now();
   const expiresAt = Timestamp.fromMillis(now.toMillis() + 5 * 60 * 1000);
+  let enrollmentId = "";
 
   await db.runTransaction(async (transaction) => {
     const [employeeSnapshot, deviceSnapshot, lockSnapshot] = await transaction.getAll(employee, deviceRegistry, fingerprintLock);
@@ -275,6 +285,7 @@ export async function queueFingerprintEnrollment(
       throw new HttpsError("failed-precondition", "Another fingerprint enrollment is already active on this terminal");
     }
     const key = identityKey(input.deviceId, employeeNo);
+    enrollmentId = key;
     transaction.set(organization.collection("deviceIdentities").doc(key), {
       organizationId: input.organizationId,
       branchId,
@@ -324,14 +335,20 @@ export async function queueFingerprintEnrollment(
       updatedAt: now,
     }, { merge: true });
   });
-  return { commandId, employeeId: input.employeeId, deviceId: input.deviceId };
+  if (enrollmentId === "") throw new Error("Enrollment transaction did not produce an identity key");
+  return { commandId, employeeId: input.employeeId, deviceId: input.deviceId, organizationId: input.organizationId, enrollmentId };
 }
 
 export const createEmployee = onCall({ region: "asia-south1" }, async (request) => {
   const auth = requireAuthentication(request.auth as AuthContext | undefined);
   const result = await createEmployeeInFirestore(firestore, auth, request.data);
+  const signalDelivered = result.commandId === null || result.deviceId === null ? false : await signalDeviceCommand({
+    organizationId: result.organizationId,
+    deviceId: result.deviceId,
+    commandId: result.commandId,
+  });
   logger.info("employee_created", { organizationId: request.data?.organizationId, employeeId: result.employeeId, uid: auth.uid });
-  return result;
+  return { ...result, signalDelivered };
 });
 
 export const updateEmployeeDepartment = onCall({ region: "asia-south1" }, async (request) => {
@@ -349,6 +366,11 @@ export const updateEmployeeDepartment = onCall({ region: "asia-south1" }, async 
 export const requestFingerprintEnrollment = onCall({ region: "asia-south1" }, async (request) => {
   const auth = requireAuthentication(request.auth as AuthContext | undefined);
   const result = await queueFingerprintEnrollment(firestore, auth, request.data);
+  const signalDelivered = await signalDeviceCommand({
+    organizationId: result.organizationId,
+    deviceId: result.deviceId,
+    commandId: result.commandId,
+  });
   logger.info("fingerprint_enrollment_queued", { organizationId: request.data?.organizationId, employeeId: result.employeeId, deviceId: result.deviceId, uid: auth.uid });
-  return result;
+  return { ...result, signalDelivered };
 });

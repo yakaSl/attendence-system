@@ -18,6 +18,7 @@ import (
 	"infactsolutions/hikbridge/internal/config"
 	"infactsolutions/hikbridge/internal/hikvision"
 	"infactsolutions/hikbridge/internal/model"
+	bridgerealtime "infactsolutions/hikbridge/internal/realtime"
 	"infactsolutions/hikbridge/internal/store"
 	"infactsolutions/hikbridge/internal/syncer"
 )
@@ -52,20 +53,30 @@ type Status struct {
 	CommandsReceived         int64     `json:"commandsReceived"`
 	CommandsSucceeded        int64     `json:"commandsSucceeded"`
 	CommandsFailed           int64     `json:"commandsFailed"`
+	RealtimeConnected        bool      `json:"realtimeConnected"`
+	LastRealtimeConnect      time.Time `json:"lastRealtimeConnect,omitempty"`
+	LastRealtimeError        string    `json:"lastRealtimeError,omitempty"`
+}
+
+type realtimeCommandClient interface {
+	Run(context.Context, func(), func(bool), func(error))
 }
 
 type Runner struct {
-	cfg     *config.Config
-	log     *slog.Logger
-	device  *hikvision.Client
-	store   *store.Store
-	cloud   *syncer.Client
-	version string
+	cfg      *config.Config
+	log      *slog.Logger
+	device   *hikvision.Client
+	store    *store.Store
+	cloud    *syncer.Client
+	realtime realtimeCommandClient
+	version  string
 
-	mu       sync.RWMutex
-	deviceMu sync.Mutex
-	status   Status
-	running  atomic.Bool
+	mu          sync.RWMutex
+	deviceMu    sync.Mutex
+	status      Status
+	running     atomic.Bool
+	syncWake    chan struct{}
+	commandWake chan struct{}
 }
 
 func New(cfg *config.Config, logger *slog.Logger, version string) (*Runner, error) {
@@ -89,6 +100,7 @@ func New(cfg *config.Config, logger *slog.Logger, version string) (*Runner, erro
 		RetryCount: cfg.Hikvision.RetryCount,
 	})
 	var cloud *syncer.Client
+	var realtimeClient realtimeCommandClient
 	if cfg.Cloud.Enabled {
 		cloud, err = syncer.New(syncer.Options{
 			URL:               cfg.Cloud.IngestURL,
@@ -102,15 +114,32 @@ func New(cfg *config.Config, logger *slog.Logger, version string) (*Runner, erro
 			eventStore.Close()
 			return nil, err
 		}
+		if cfg.Cloud.RealtimeEnabled {
+			realtimeClient, err = bridgerealtime.New(bridgerealtime.Options{
+				SessionURL:        cfg.Cloud.RealtimeSessionURL,
+				DeviceID:          cfg.Hikvision.DeviceID,
+				BridgeKey:         cfg.Cloud.BridgeKey,
+				AgentVersion:      version,
+				Timeout:           time.Duration(cfg.Cloud.RequestTimeoutSeconds) * time.Second,
+				AllowInsecureHTTP: cfg.Cloud.AllowInsecureHTTP,
+			})
+			if err != nil {
+				eventStore.Close()
+				return nil, err
+			}
+		}
 	}
 	startedAt := time.Now()
 	return &Runner{
-		cfg:     cfg,
-		log:     logger,
-		device:  device,
-		store:   eventStore,
-		cloud:   cloud,
-		version: version,
+		cfg:         cfg,
+		log:         logger,
+		device:      device,
+		store:       eventStore,
+		cloud:       cloud,
+		realtime:    realtimeClient,
+		version:     version,
+		syncWake:    make(chan struct{}, 1),
+		commandWake: make(chan struct{}, 1),
 		status: Status{
 			StartedAt:     startedAt,
 			BridgeVersion: version,
@@ -246,6 +275,12 @@ func (r *Runner) pollOnce(ctx context.Context) error {
 	)
 	if preservedIssues > 0 {
 		r.log.Warn("device_events_preserved_with_parse_errors", "device", r.cfg.Hikvision.DeviceID, "count", preservedIssues)
+	}
+	if inserted > 0 {
+		select {
+		case r.syncWake <- struct{}{}:
+		default:
+		}
 	}
 	return nil
 }
@@ -439,6 +474,19 @@ func wait(ctx context.Context, delay time.Duration) bool {
 	}
 }
 
+func waitForWake(ctx context.Context, wake <-chan struct{}, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-wake:
+		return true
+	case <-timer.C:
+		return true
+	}
+}
+
 func (r *Runner) syncLoop(ctx context.Context, done chan<- struct{}) {
 	defer func() { done <- struct{}{} }()
 	if r.cloud == nil {
@@ -447,6 +495,13 @@ func (r *Runner) syncLoop(ctx context.Context, done chan<- struct{}) {
 	}
 	failures := 0
 	nextStatusReport := time.Time{}
+	statusInterval := time.Duration(r.cfg.Service.StatusIntervalSeconds) * time.Second
+	if r.realtime != nil && statusInterval < 4*time.Minute {
+		// Realtime command delivery removes the need to use frequent ingestion
+		// probes as command polls. Attendance uploads still wake immediately;
+		// this interval is only the low-priority dashboard heartbeat.
+		statusInterval = 4 * time.Minute
+	}
 	for {
 		processed, err := r.syncOnce(ctx)
 		if ctx.Err() != nil {
@@ -468,7 +523,7 @@ func (r *Runner) syncLoop(ctx context.Context, done chan<- struct{}) {
 				FirmwareVersion:          snapshot.FirmwareVersion,
 			})
 			if err == nil {
-				nextStatusReport = time.Now().Add(time.Duration(r.cfg.Service.StatusIntervalSeconds) * time.Second)
+				nextStatusReport = time.Now().Add(statusInterval)
 			}
 		}
 		var delay time.Duration
@@ -489,7 +544,7 @@ func (r *Runner) syncLoop(ctx context.Context, done chan<- struct{}) {
 				delay = time.Duration(r.cfg.Service.SyncIntervalSeconds) * time.Second
 			}
 		}
-		if !wait(ctx, delay) {
+		if !waitForWake(ctx, r.syncWake, delay) {
 			return
 		}
 	}
@@ -514,21 +569,35 @@ func (r *Runner) executeCommand(ctx context.Context, command model.DeviceCommand
 		EmployeeNo: command.Payload.EmployeeNo,
 		Name:       command.Payload.Name,
 	}
-	r.deviceMu.Lock()
-	defer r.deviceMu.Unlock()
-	if err := r.device.UpsertUser(ctx, provisioning); err != nil {
-		result = commandError("user_sync_failed", err)
+	if command.Type != model.CommandUpsertUser && command.Type != model.CommandEnrollFingerprint {
+		result = commandError("unsupported_command", fmt.Errorf("unsupported command type %q", command.Type))
 		result.CommandID = command.ID
 		return result
+	}
+	userAlreadyProvisioned := false
+	if command.Type == model.CommandEnrollFingerprint {
+		cached, err := r.store.IsUserProvisioned(provisioning.EmployeeNo, provisioning.Name)
+		if err != nil {
+			r.log.Warn("provisioned_user_cache_read_failed", "employeeNo", provisioning.EmployeeNo, "error", err)
+		} else {
+			userAlreadyProvisioned = cached
+		}
+	}
+	r.deviceMu.Lock()
+	defer r.deviceMu.Unlock()
+	if !userAlreadyProvisioned {
+		if err := r.device.UpsertUser(ctx, provisioning); err != nil {
+			result = commandError("user_sync_failed", err)
+			result.CommandID = command.ID
+			return result
+		}
+		if err := r.store.MarkUserProvisioned(provisioning.EmployeeNo, provisioning.Name); err != nil {
+			r.log.Warn("provisioned_user_cache_write_failed", "employeeNo", provisioning.EmployeeNo, "error", err)
+		}
 	}
 	if command.Type == model.CommandUpsertUser {
 		result.State = "succeeded"
 		result.Output = &model.CommandResultOutput{EmployeeNo: command.Payload.EmployeeNo}
-		return result
-	}
-	if command.Type != model.CommandEnrollFingerprint {
-		result = commandError("unsupported_command", fmt.Errorf("unsupported command type %q", command.Type))
-		result.CommandID = command.ID
 		return result
 	}
 	capture, err := r.device.CaptureFingerprint(ctx, command.Payload.FingerPrintID)
@@ -538,9 +607,27 @@ func (r *Runner) executeCommand(ctx context.Context, command model.DeviceCommand
 		return result
 	}
 	if err := r.device.SetFingerprint(ctx, command.Payload.EmployeeNo, capture); err != nil {
-		result = commandError("fingerprint_setup_failed", err)
-		result.CommandID = command.ID
-		return result
+		if !userAlreadyProvisioned {
+			result = commandError("fingerprint_setup_failed", err)
+			result.CommandID = command.ID
+			return result
+		}
+		// The local cache can become stale if an administrator removes the user
+		// directly on the terminal. Repair that case once without asking the
+		// employee to provide another fingerprint capture.
+		if repairErr := r.device.UpsertUser(ctx, provisioning); repairErr != nil {
+			result = commandError("fingerprint_setup_failed", fmt.Errorf("assign fingerprint: %v; repair terminal user: %w", err, repairErr))
+			result.CommandID = command.ID
+			return result
+		}
+		if cacheErr := r.store.MarkUserProvisioned(provisioning.EmployeeNo, provisioning.Name); cacheErr != nil {
+			r.log.Warn("provisioned_user_cache_write_failed", "employeeNo", provisioning.EmployeeNo, "error", cacheErr)
+		}
+		if retryErr := r.device.SetFingerprint(ctx, command.Payload.EmployeeNo, capture); retryErr != nil {
+			result = commandError("fingerprint_setup_failed", retryErr)
+			result.CommandID = command.ID
+			return result
+		}
 	}
 	result.State = "succeeded"
 	result.Output = &model.CommandResultOutput{
@@ -595,9 +682,23 @@ func (r *Runner) exchangeCommandsOnce(ctx context.Context) (int, error) {
 		r.status.ActiveCommandType = string(command.Type)
 		r.mu.Unlock()
 		r.log.Info("device_command_started", "device", r.cfg.Hikvision.DeviceID, "commandId", command.ID, "type", command.Type)
-		commandCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		commandTimeout := 30 * time.Second
+		if command.Type == model.CommandEnrollFingerprint {
+			// Capture alone can legitimately wait 45 seconds for a finger. Leave
+			// enough time for terminal-user preparation and fingerprint assignment.
+			commandTimeout = 2 * time.Minute
+			if err := r.pollOnce(ctx); err != nil && ctx.Err() == nil {
+				r.log.Warn("pre_enrollment_poll_failed", "device", r.cfg.Hikvision.DeviceID, "commandId", command.ID, "error", err)
+			}
+		}
+		commandCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 		result := r.executeCommand(commandCtx, command)
 		cancel()
+		if command.Type == model.CommandEnrollFingerprint && ctx.Err() == nil {
+			if err := r.pollOnce(ctx); err != nil {
+				r.log.Warn("post_enrollment_poll_failed", "device", r.cfg.Hikvision.DeviceID, "commandId", command.ID, "error", err)
+			}
+		}
 		if err := r.store.PutCommandResult(result); err != nil {
 			return processed, fmt.Errorf("persist command result %s: %w", command.ID, err)
 		}
@@ -621,12 +722,7 @@ func (r *Runner) exchangeCommandsOnce(ctx context.Context) (int, error) {
 	return processed, nil
 }
 
-func (r *Runner) commandLoop(ctx context.Context, done chan<- struct{}) {
-	defer func() { done <- struct{}{} }()
-	if r.cloud == nil {
-		<-ctx.Done()
-		return
-	}
+func (r *Runner) legacyCommandLoop(ctx context.Context) {
 	for {
 		processed, err := r.exchangeCommandsOnce(ctx)
 		if ctx.Err() != nil {
@@ -634,17 +730,135 @@ func (r *Runner) commandLoop(ctx context.Context, done chan<- struct{}) {
 		}
 		delay := time.Duration(r.cfg.Service.SyncIntervalSeconds) * time.Second
 		if err != nil {
-			r.mu.Lock()
-			r.status.LastCommandPoll = time.Now()
-			r.status.LastCommandError = err.Error()
-			r.mu.Unlock()
-			r.log.Error("device_command_exchange_failed", "device", r.cfg.Hikvision.DeviceID, "error", err)
+			r.recordCommandExchangeError(err)
 			delay = withJitter(15 * time.Second)
 		} else if processed > 0 {
 			delay = 250 * time.Millisecond
 		}
 		if !wait(ctx, delay) {
 			return
+		}
+	}
+}
+
+func (r *Runner) recordCommandExchangeError(err error) {
+	r.mu.Lock()
+	r.status.LastCommandPoll = time.Now()
+	r.status.LastCommandError = err.Error()
+	r.mu.Unlock()
+	r.log.Error("device_command_exchange_failed", "device", r.cfg.Hikvision.DeviceID, "error", err)
+}
+
+func resetTimer(timer **time.Timer, timerC *<-chan time.Time, delay time.Duration) {
+	if *timer == nil {
+		*timer = time.NewTimer(delay)
+	} else {
+		if !(*timer).Stop() {
+			select {
+			case <-(*timer).C:
+			default:
+			}
+		}
+		(*timer).Reset(delay)
+	}
+	*timerC = (*timer).C
+}
+
+func stopTimer(timer *time.Timer, timerC *<-chan time.Time) {
+	if timer != nil && !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	*timerC = nil
+}
+
+func (r *Runner) commandLoop(ctx context.Context, done chan<- struct{}) {
+	defer func() { done <- struct{}{} }()
+	if r.cloud == nil {
+		<-ctx.Done()
+		return
+	}
+	if r.realtime == nil {
+		r.legacyCommandLoop(ctx)
+		return
+	}
+
+	states := make(chan bool, 2)
+	go r.realtime.Run(ctx,
+		func() {
+			select {
+			case r.commandWake <- struct{}{}:
+			default:
+			}
+		},
+		func(connected bool) {
+			select {
+			case states <- connected:
+			default:
+			}
+		},
+		func(err error) {
+			r.mu.Lock()
+			r.status.LastRealtimeError = err.Error()
+			r.mu.Unlock()
+			r.log.Warn("realtime_command_stream_error", "device", r.cfg.Hikvision.DeviceID, "error", err)
+		},
+	)
+
+	connected := false
+	startupReconciled := false
+	fallbackDelay := 15 * time.Second
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	resetTimer(&timer, &timerC, 0)
+	defer func() { stopTimer(timer, &timerC) }()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case state := <-states:
+			connected = state
+			r.mu.Lock()
+			r.status.RealtimeConnected = state
+			if state {
+				r.status.LastRealtimeConnect = time.Now()
+				r.status.LastRealtimeError = ""
+			}
+			r.mu.Unlock()
+			if state {
+				fallbackDelay = 15 * time.Second
+				if startupReconciled {
+					stopTimer(timer, &timerC)
+				}
+			} else {
+				resetTimer(&timer, &timerC, withJitter(fallbackDelay))
+			}
+		case <-r.commandWake:
+			resetTimer(&timer, &timerC, 0)
+		case <-timerC:
+			timerC = nil
+			startupReconciled = true
+			processed, err := r.exchangeCommandsOnce(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+			if err != nil {
+				r.recordCommandExchangeError(err)
+				resetTimer(&timer, &timerC, withJitter(15*time.Second))
+				continue
+			}
+			if processed > 0 {
+				// Immediately acknowledge the durable result and collect the next
+				// command without waiting for another realtime notification.
+				resetTimer(&timer, &timerC, 250*time.Millisecond)
+				continue
+			}
+			if !connected {
+				fallbackDelay = min(fallbackDelay*2, 5*time.Minute)
+				resetTimer(&timer, &timerC, withJitter(fallbackDelay))
+			}
 		}
 	}
 }

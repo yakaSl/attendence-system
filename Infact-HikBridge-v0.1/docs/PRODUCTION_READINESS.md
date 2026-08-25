@@ -42,7 +42,7 @@ Do not label the product production-ready until every row is closed.
 | P0 | Cloud latency/failure could block device polling | Independent polling and cloud loops with bounded backoff/jitter; automated slow/failing cloud tests. |
 | P0 | Malformed terminal entries could be skipped by advancing the checkpoint | Raw malformed evidence is preserved before checkpoint advancement while valid siblings continue. |
 | P1 | Interrupted uploads/corrupt queue records lacked explicit recovery | Versioned states, upload recovery, failed quarantine with source bytes, deterministic deduplication. |
-| P1 | Offline/idle/stopped devices were not distinguishable in the dashboard | Signed 60-second bridge health reports, terminal status/queue/metadata projection, and five-minute stale-contact inference. |
+| P1 | Offline/idle/stopped devices were not distinguishable in the dashboard | Signed four-minute bridge health reports, terminal status/queue/metadata projection, and six-minute stale-contact inference. |
 | P1 | Secret Manager was read on every batch | Concurrent-deduplicated, 5-minute, 500-entry version-name cache; rotation fetches a new version immediately. |
 | P1 | Cloud-acknowledged local files could grow without bound | Configurable synced-record retention, default 90 days; pending/failed evidence is never automatically pruned. |
 | P1 | Date-range source-trigger retries could reset an already-progressing job | Deterministic create-if-absent transaction for leave/holiday jobs. |

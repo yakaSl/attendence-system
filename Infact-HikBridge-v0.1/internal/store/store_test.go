@@ -251,3 +251,32 @@ func TestCommandResultPersistsUntilExplicitCloudAcknowledgement(t *testing.T) {
 		t.Fatalf("result count after acknowledgement = %d err=%v", count, err)
 	}
 }
+
+func TestProvisionedUserCachePersistsAndInvalidatesOnIdentityChange(t *testing.T) {
+	dataDir := t.TempDir()
+	first, err := Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current, err := first.IsUserProvisioned("EMP-17", "Kasun Perera"); err != nil || current {
+		t.Fatalf("uncached user = %t err=%v", current, err)
+	}
+	if err := first.MarkUserProvisioned("EMP-17", "Kasun Perera"); err != nil {
+		t.Fatal(err)
+	}
+	_ = first.Close()
+
+	restarted, err := Open(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current, err := restarted.IsUserProvisioned(" EMP-17 ", " Kasun Perera "); err != nil || !current {
+		t.Fatalf("persisted user = %t err=%v", current, err)
+	}
+	if current, err := restarted.IsUserProvisioned("EMP-17", "Kasun Silva"); err != nil || current {
+		t.Fatalf("renamed user must be reprovisioned: current=%t err=%v", current, err)
+	}
+	if current, err := restarted.IsUserProvisioned("EMP-18", "Kasun Perera"); err != nil || current {
+		t.Fatalf("different employee must be reprovisioned: current=%t err=%v", current, err)
+	}
+}

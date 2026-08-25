@@ -48,10 +48,12 @@ type deviceForm struct {
 }
 
 type cloudForm struct {
-	Enabled          bool   `json:"enabled"`
-	InstallationCode string `json:"installationCode"`
-	BridgeCredential string `json:"bridgeCredential"`
-	IngestURL        string `json:"ingestUrl"`
+	Enabled            bool   `json:"enabled"`
+	InstallationCode   string `json:"installationCode"`
+	BridgeCredential   string `json:"bridgeCredential"`
+	IngestURL          string `json:"ingestUrl"`
+	RealtimeEnabled    bool   `json:"realtimeEnabled"`
+	RealtimeSessionURL string `json:"realtimeSessionUrl"`
 }
 
 type serviceForm struct {
@@ -78,6 +80,8 @@ type publicState struct {
 	InstallationCode    string `json:"installationCode"`
 	HasBridgeCredential bool   `json:"hasBridgeCredential"`
 	IngestURL           string `json:"ingestUrl"`
+	RealtimeEnabled     bool   `json:"realtimeEnabled"`
+	RealtimeSessionURL  string `json:"realtimeSessionUrl"`
 	PollIntervalSeconds int    `json:"pollIntervalSeconds"`
 }
 
@@ -312,6 +316,8 @@ func (app *application) state() publicState {
 	state.InstallationCode = cfg.Hikvision.DeviceID
 	state.HasBridgeCredential = cfg.Cloud.BridgeKey != ""
 	state.IngestURL = cfg.Cloud.IngestURL
+	state.RealtimeEnabled = cfg.Cloud.RealtimeEnabled
+	state.RealtimeSessionURL = cfg.Cloud.RealtimeSessionURL
 	state.PollIntervalSeconds = cfg.Service.PollIntervalSeconds
 	return state
 }
@@ -373,9 +379,11 @@ func (app *application) buildConfig(form setupForm) (*config.Config, error) {
 			TimeZone:   strings.TrimSpace(form.Device.TimeZone),
 		},
 		Cloud: config.CloudConfig{
-			Enabled:   form.Cloud.Enabled,
-			IngestURL: strings.TrimSpace(form.Cloud.IngestURL),
-			BridgeKey: bridgeCredential,
+			Enabled:            form.Cloud.Enabled,
+			IngestURL:          strings.TrimSpace(form.Cloud.IngestURL),
+			BridgeKey:          bridgeCredential,
+			RealtimeEnabled:    form.Cloud.RealtimeEnabled,
+			RealtimeSessionURL: strings.TrimSpace(form.Cloud.RealtimeSessionURL),
 		},
 	}
 	if existing != nil {

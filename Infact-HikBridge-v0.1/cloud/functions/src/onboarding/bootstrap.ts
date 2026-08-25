@@ -166,6 +166,7 @@ export async function bootstrapOrganizationInFirestore(
 
 export const bootstrapOrganization = onCall({
   region: "asia-south1",
+  invoker: "public",
   timeoutSeconds: 30,
   memory: "256MiB",
   maxInstances: 20,

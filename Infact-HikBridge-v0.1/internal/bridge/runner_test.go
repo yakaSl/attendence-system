@@ -2,11 +2,13 @@ package bridge
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +18,118 @@ import (
 	"infactsolutions/hikbridge/internal/store"
 	"infactsolutions/hikbridge/internal/syncer"
 )
+
+type connectedRealtimeStub struct{}
+
+func (connectedRealtimeStub) Run(ctx context.Context, _ func(), onState func(bool), _ func(error)) {
+	onState(true)
+	<-ctx.Done()
+}
+
+func TestConnectedRealtimeCommandLoopMakesNoIdlePollingCalls(t *testing.T) {
+	var exchanges atomic.Int32
+	cloudServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		exchanges.Add(1)
+		var payload struct {
+			RequestID string `json:"requestId"`
+			DeviceID  string `json:"deviceId"`
+		}
+		_ = json.NewDecoder(request.Body).Decode(&payload)
+		_ = json.NewEncoder(response).Encode(syncer.Response{
+			ProtocolVersion:        syncer.ProtocolVersion,
+			RequestID:              payload.RequestID,
+			DeviceID:               payload.DeviceID,
+			OrganizationID:         "org-1",
+			BranchID:               "branch-1",
+			Accepted:               []string{},
+			Duplicates:             []string{},
+			Rejected:               []syncer.RejectedEvent{},
+			Commands:               []model.DeviceCommand{},
+			AcknowledgedCommandIDs: []string{},
+		})
+	}))
+	defer cloudServer.Close()
+	runner, err := New(&config.Config{
+		Service: config.ServiceConfig{DataDir: t.TempDir(), SyncIntervalSeconds: 1},
+		Hikvision: config.HikvisionConfig{
+			DeviceID: "office-main-01", BaseURL: "http://127.0.0.1:1", Username: "admin", Password: "password",
+			PageSize: 30, TimeZone: "UTC", RequestTimeoutSeconds: 1, RetryCount: 1,
+		},
+		Cloud: config.CloudConfig{
+			Enabled: true, IngestURL: cloudServer.URL, BridgeKey: "0123456789abcdef0123456789abcdef",
+			BatchSize: 100, RequestTimeoutSeconds: 1, AllowInsecureHTTP: true,
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	runner.realtime = connectedRealtimeStub{}
+	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{}, 1)
+	go runner.commandLoop(ctx, done)
+	<-done
+	if calls := exchanges.Load(); calls != 1 {
+		t.Fatalf("idle command exchanges = %d, want one startup reconciliation and no polling", calls)
+	}
+}
+
+func TestEnrollmentSkipsDuplicateUserProvisioningAfterConfirmedUpsert(t *testing.T) {
+	var userSearches atomic.Int32
+	var userCreates atomic.Int32
+	template := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", 512)))
+	deviceServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/ISAPI/AccessControl/UserInfo/Search":
+			userSearches.Add(1)
+			_, _ = response.Write([]byte(`{"UserInfoSearch":{"searchID":"test","totalMatches":0,"numOfMatches":0,"UserInfo":[]}}`))
+		case "/ISAPI/AccessControl/UserInfo/Record":
+			userCreates.Add(1)
+			_, _ = response.Write([]byte(`{"ResponseStatus":{"statusCode":1,"statusString":"OK"}}`))
+		case "/ISAPI/AccessControl/CaptureFingerPrint":
+			_, _ = response.Write([]byte(`<CaptureFingerPrint><fingerData>` + template +
+				`</fingerData><fingerNo>2</fingerNo><fingerPrintQuality>87</fingerPrintQuality></CaptureFingerPrint>`))
+		case "/ISAPI/AccessControl/FingerPrint/SetUp":
+			_, _ = response.Write([]byte(`{"FingerPrintStatus":{"StatusList":[{"id":1,"cardReaderRecvStatus":"1"}]}}`))
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer deviceServer.Close()
+
+	runner, err := New(&config.Config{
+		Service: config.ServiceConfig{DataDir: t.TempDir()},
+		Hikvision: config.HikvisionConfig{
+			DeviceID: "office-main-01", BaseURL: deviceServer.URL, Username: "admin", Password: "password",
+			PageSize: 30, TimeZone: "UTC", RequestTimeoutSeconds: 2, RetryCount: 1,
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	expiresAt := time.Now().Add(time.Minute)
+	upsertResult := runner.executeCommand(context.Background(), model.DeviceCommand{
+		ID: "upsert-1", Type: model.CommandUpsertUser, ExpiresAt: expiresAt,
+		Payload: model.UserCommandPayload{EmployeeID: "employee-1", EmployeeNo: "EMP-17", Name: "Kasun"},
+	})
+	if upsertResult.State != "succeeded" {
+		t.Fatalf("upsert result = %+v", upsertResult)
+	}
+	enrollmentResult := runner.executeCommand(context.Background(), model.DeviceCommand{
+		ID: "enroll-1", Type: model.CommandEnrollFingerprint, ExpiresAt: expiresAt,
+		Payload: model.UserCommandPayload{
+			EmployeeID: "employee-1", EmployeeNo: "EMP-17", Name: "Kasun", FingerPrintID: 2,
+		},
+	})
+	if enrollmentResult.State != "succeeded" {
+		t.Fatalf("enrollment result = %+v", enrollmentResult)
+	}
+	if searches, creates := userSearches.Load(), userCreates.Load(); searches != 1 || creates != 1 {
+		t.Fatalf("terminal user operations: searches=%d creates=%d; enrollment repeated provisioning", searches, creates)
+	}
+}
 
 func TestSlowCloudUploadDoesNotBlockDevicePolling(t *testing.T) {
 	var polls atomic.Int32

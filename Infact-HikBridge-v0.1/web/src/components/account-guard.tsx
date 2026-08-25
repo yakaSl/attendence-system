@@ -15,11 +15,12 @@ export function AccountGuard({ children, platformAdmin = false }: { children: Re
     if (onboardingRequired) router.replace("/onboarding");
     else if (user === null && error === null) router.replace("/login");
     else if (platformAdmin && user?.role !== "platformAdmin") router.replace("/dashboard");
+    else if (!platformAdmin && user?.organizationId === null) router.replace("/platform");
   }, [error, loading, onboardingRequired, platformAdmin, router, user]);
 
   if (loading) return <main className="centered-state"><LoadingState label="Checking account" /></main>;
   if (error) return <main className="centered-state"><ErrorState message={error} /></main>;
-  if (user === null || onboardingRequired || (platformAdmin && user.role !== "platformAdmin")) {
+  if (user === null || onboardingRequired || (platformAdmin && user.role !== "platformAdmin") || (!platformAdmin && user.organizationId === null)) {
     return <main className="centered-state"><LoadingState label="Opening account" /></main>;
   }
   return children;

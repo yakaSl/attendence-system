@@ -67,7 +67,7 @@ Server-only top-level collections are denied to every browser. The dashboard nev
 
 `web/` is a Next.js App Router client application using Firebase modular SDKs. Repository queries remain on organization paths and have explicit result caps. Operational pages surface attendance exceptions, unmapped identities, missing punches, device status, and recalculation state without exposing stack traces or secrets.
 
-A health report is expected every 60 seconds. Stored offline status is honored immediately; five minutes without any bridge contact is treated as offline in the dashboard so a stopped service does not remain falsely green.
+A health report is expected every four minutes. Stored offline status is honored immediately; six minutes without any bridge contact is treated as offline in the dashboard so a stopped service does not remain falsely green.
 
 ## Reliability invariants
 

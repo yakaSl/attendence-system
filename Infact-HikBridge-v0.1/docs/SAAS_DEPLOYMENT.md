@@ -70,6 +70,16 @@ firebase apphosting:rollouts:create YOUR_BACKEND_ID --git_branch main
 
 Replace `SAAS_PUBLIC_URL` with the final `hosted.app` or custom-domain URL and redeploy Functions before testing checkout. Add that domain to Firebase Authentication > Settings > Authorized domains.
 
+### HikBridge installer download
+
+Code-sign the versioned Windows installer, publish it to an HTTPS location, and configure the App Hosting runtime variable below:
+
+```dotenv
+HIKBRIDGE_INSTALLER_URL=https://downloads.example.com/Infact-HikBridge-Setup-0.1.1.exe
+```
+
+The Devices page links to the stable SaaS path `/downloads/hikbridge`; that route validates the configured HTTPS location and redirects to the current signed release. Update only the runtime variable when publishing a new version. If the variable is missing or invalid, the route fails closed instead of distributing an unsigned or insecure artifact.
+
 ## 5. First platform administrator
 
 Create the owner account through `/signup`, complete organization onboarding, then copy its Firebase Authentication UID. From `cloud/` run:

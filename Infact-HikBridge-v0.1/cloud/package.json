@@ -12,9 +12,10 @@
     "test": "npm --workspace functions run test",
     "test:rules:unit": "vitest run test/firestore.rules.test.ts",
     "test:emulator:unit": "npm run test:rules:unit && npm --workspace functions run test:emulator",
-    "test:rules": "firebase emulators:exec --project demo-hikbridge --only firestore \"npm run test:emulator:unit\"",
+    "test:rules": "firebase emulators:exec --project demo-hikbridge --only firestore,database \"npm run test:emulator:unit\"",
     "bootstrap:owner": "node scripts/bootstrap-owner.mjs",
     "set:platform-admin": "node scripts/set-platform-admin.mjs",
+    "set:function-public": "node scripts/set-run-public-invoker.mjs",
     "verify": "npm run lint && npm run typecheck && npm run test && npm run test:rules"
   },
   "devDependencies": {

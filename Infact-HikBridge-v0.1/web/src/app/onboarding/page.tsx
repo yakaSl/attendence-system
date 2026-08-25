@@ -63,6 +63,11 @@ function safeError(error: unknown): string {
     .replace(/\s*\(functions\/[a-z-]+\)\.?$/i, "");
 }
 
+function errorCode(error: unknown): string {
+  if (typeof error !== "object" || error === null || !("code" in error)) return "";
+  return typeof error.code === "string" ? error.code : "";
+}
+
 export default function OnboardingPage() {
   const router = useRouter();
   const {
@@ -163,7 +168,13 @@ export default function OnboardingPage() {
       router.replace(`/subscribe?plan=${encodeURIComponent(selectedPlan)}&cycle=${encodeURIComponent(selectedCycle)}`);
       router.refresh();
     } catch (creationError) {
-      setSubmitError(safeError(creationError));
+      if (errorCode(creationError).endsWith("already-exists")) {
+        setStep(0);
+        setErrors({ organizationId: "This organization identifier is already in use. Choose another one." });
+        setSubmitError(null);
+      } else {
+        setSubmitError(safeError(creationError));
+      }
     } finally {
       setSubmitting(false);
     }

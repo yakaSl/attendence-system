@@ -308,6 +308,15 @@ textarea { min-height: 82px; resize: vertical; }
 .device-summary-line i { width: 7px; height: 7px; border-radius: 50%; background: #98a19f; }
 .device-summary-line i[data-status="online"] { background: #45a875; }
 .device-summary-line i[data-status="offline"] { background: #d15b5b; }
+.bridge-download-strip { display: flex; min-height: 116px; align-items: center; justify-content: space-between; gap: 30px; margin-bottom: 18px; padding: 22px 24px; border-block: 1px solid #b8c9c5; background: #f7faf9; }
+.bridge-download-copy { display: flex; min-width: 0; align-items: center; gap: 17px; }
+.bridge-download-icon { display: grid; width: 46px; height: 46px; flex: 0 0 auto; place-items: center; border-radius: 50%; background: var(--teal); color: white; }
+.bridge-download-copy h2 { margin: 5px 0 0; font-size: 17px; font-weight: 670; letter-spacing: -.025em; }
+.bridge-download-copy > div > p:last-child { max-width: 620px; margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.bridge-download-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 15px; }
+.bridge-download-actions > span { display: flex; align-items: center; gap: 6px; color: #527069; font-size: 9px; white-space: nowrap; }
+.bridge-download-actions > span svg { color: var(--green); }
+.bridge-download-actions .button { min-height: 40px; padding-inline: 16px; }
 .device-list { display: flex; flex-direction: column; }
 .device-row { display: grid; grid-template-columns: auto minmax(180px, 1.35fr) repeat(5, minmax(90px, .7fr)) auto auto; align-items: center; gap: 16px; min-height: 78px; padding: 12px 16px; border-bottom: 1px solid #edf0ef; }
 .device-row:last-child { border-bottom: 0; }
@@ -753,6 +762,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .exception-item strong, .device-mini strong { font-size: 11px; }
 
   .device-summary-line { flex-wrap: wrap; gap: 9px 15px; }
+  .bridge-download-strip { align-items: stretch; flex-direction: column; gap: 17px; padding: 19px; }
+  .bridge-download-actions { justify-content: space-between; }
   .device-row {
     position: relative;
     grid-template-columns: 40px repeat(2, minmax(0, 1fr));
@@ -849,6 +860,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .responsive-table tr { padding: 8px; }
   .responsive-table td { padding-inline: 6px; }
   .device-row { grid-template-columns: 40px repeat(2, minmax(0, 1fr)); padding-inline: 13px; }
+  .bridge-download-copy { align-items: flex-start; }
+  .bridge-download-icon { width: 40px; height: 40px; }
+  .bridge-download-actions { align-items: stretch; flex-direction: column; gap: 10px; }
+  .bridge-download-actions .button { width: 100%; }
   .shift-row { padding-inline: 13px; }
   .shift-policy strong { line-height: 1.4; }
   .report-type-strip { margin-inline: -12px; padding-inline: 12px; }

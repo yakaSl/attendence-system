@@ -2,11 +2,12 @@
 
 import { ArrowLeft, ArrowRight, Check, CreditCard, LoaderCircle, ShieldCheck } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 
 import { AccountGuard } from "@/components/account-guard";
 import { BrandLogo } from "@/components/brand-logo";
-import { ErrorState } from "@/components/ui";
+import { ErrorState, LoadingState } from "@/components/ui";
 import { useAuth } from "@/lib/auth/auth-provider";
 import { billingCycles, formatLkr, planPrice, saasPlans, type BillingCycle, type PlanId } from "@/lib/billing/catalog";
 import { usePlanAvailability } from "@/lib/billing/availability";
@@ -23,15 +24,20 @@ export function SubscribeScreen({ initialPlan, initialCycle, cancelled }: {
   cancelled: boolean;
 }) {
   const { user, logout } = useAuth();
-  const { subscription } = useSubscription();
+  const { subscription, loading: subscriptionLoading, error: subscriptionError } = useSubscription();
+  const router = useRouter();
   const [planId, setPlanId] = useState<PlanId>(initialPlan);
   const [cycle, setCycle] = useState<BillingCycle>(initialCycle);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const availability = usePlanAvailability();
 
+  useEffect(() => {
+    if (subscription?.accessStatus === "active") router.replace("/dashboard");
+  }, [router, subscription?.accessStatus]);
+
   async function checkout() {
-    if (user === null) return;
+    if (user === null || user.organizationId === null) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -60,6 +66,8 @@ export function SubscribeScreen({ initialPlan, initialCycle, cancelled }: {
         {subscription?.accessStatus === "active" ? (
           <div className="subscription-active-notice"><Check size={18} /><div><strong>Your {subscription.planName} access is active.</strong><span>The webhook has confirmed the subscription. Your workspace is ready.</span></div><Link href="/dashboard">Open workspace <ArrowRight size={15} /></Link></div>
         ) : null}
+        {subscriptionLoading ? <LoadingState label="Checking your current package" /> : null}
+        {subscriptionError ? <ErrorState message={subscriptionError} /> : null}
         {error ? <ErrorState message={error} /> : null}
         <div className="subscribe-layout">
           <div className="subscribe-plan-list">
@@ -85,7 +93,7 @@ export function SubscribeScreen({ initialPlan, initialCycle, cancelled }: {
               <li><Check size={14} />{selected.limits.branches ?? "Unlimited"} branches</li>
               <li><Check size={14} />{selected.limits.historyYears} years of history</li>
             </ul>
-            <button className="subscribe-checkout" type="button" onClick={() => void checkout()} disabled={submitting || subscription?.accessStatus === "active" || !availability[planId][cycle]}>
+            <button className="subscribe-checkout" type="button" onClick={() => void checkout()} disabled={submitting || subscriptionLoading || subscriptionError !== null || subscription?.accessStatus === "active" || !availability[planId][cycle]}>
               {submitting ? <><LoaderCircle className="spin" size={16} />Opening secure checkout</> : <><CreditCard size={16} />Continue with Dodo<ArrowRight size={16} /></>}
             </button>
             {!availability[planId][cycle] ? <p className="subscribe-unavailable">The platform owner has not enabled this package-cycle for checkout.</p> : null}

@@ -1,6 +1,7 @@
 "use client";
 
 import { ArrowRight, Fingerprint, Plus, Search, UserRoundCheck } from "lucide-react";
+import { doc, onSnapshot } from "firebase/firestore";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 
@@ -10,6 +11,7 @@ import { useAuth } from "@/lib/auth/auth-provider";
 import type { Branch, Department, Device, DeviceEnrollment, Employee, UnmappedIdentity } from "@/lib/data/types";
 import { useData } from "@/lib/data/data-provider";
 import { createEmployee, mapDeviceIdentity, requestFingerprintEnrollment } from "@/lib/firebase/actions";
+import { firebaseFirestore, isDemoMode } from "@/lib/firebase/client";
 import { formatMinutes, initials, todayKey } from "@/lib/format";
 import { nextSort, sortRows, type SortState } from "@/lib/sorting";
 import { useAsyncData } from "@/lib/use-async-data";
@@ -51,6 +53,7 @@ export default function EmployeesPage() {
   const [creating, setCreating] = useState(false);
   const [enrolling, setEnrolling] = useState<Employee | null>(null);
   const [hiddenMappings, setHiddenMappings] = useState<string[]>([]);
+  const [liveEnrollment, setLiveEnrollment] = useState<{ id: string; state: DeviceEnrollment["state"]; lastError: string | null } | null>(null);
 
   const departments = useMemo(() => [...new Set(data?.employees.map((employee) => employee.departmentName) ?? [])].sort(), [data]);
   const filteredRows = useMemo(() => (data?.employees ?? []).filter((employee) => {
@@ -72,13 +75,35 @@ export default function EmployeesPage() {
   }), [data?.enrollments, filteredRows, sort]);
   const requestSort = (key: EmployeeSort) => setSort((current) => nextSort(current, key));
   const openUnmapped = (data?.unmapped ?? []).filter((identity) => !hiddenMappings.includes(identity.id));
-  const hasActiveEnrollment = (data?.enrollments ?? []).some((enrollment) => ["user_pending", "queued", "capturing"].includes(enrollment.state));
-
+  const liveEnrollmentId = liveEnrollment?.id ?? null;
+  const organizationId = user?.organizationId ?? null;
   useEffect(() => {
-    if (!hasActiveEnrollment) return;
-    const timer = window.setInterval(refresh, 3000);
-    return () => window.clearInterval(timer);
-  }, [hasActiveEnrollment, refresh]);
+    if (liveEnrollmentId === null || organizationId === null || isDemoMode()) return;
+    let completionRefreshed = false;
+    return onSnapshot(
+      doc(firebaseFirestore(), "organizations", organizationId, "deviceEnrollments", liveEnrollmentId),
+      (snapshot) => {
+        if (!snapshot.exists()) return;
+        const value = snapshot.data();
+        const states: DeviceEnrollment["state"][] = ["user_pending", "user_synced", "queued", "capturing", "enrolled", "failed"];
+        const state = states.includes(value.state as DeviceEnrollment["state"]) ? value.state as DeviceEnrollment["state"] : "failed";
+        setLiveEnrollment({
+          id: snapshot.id,
+          state,
+          lastError: typeof value.lastError === "string" ? value.lastError : null,
+        });
+        if (!completionRefreshed && (state === "enrolled" || state === "failed")) {
+          completionRefreshed = true;
+          refresh();
+        }
+      },
+      (snapshotError) => setLiveEnrollment((current) => current === null ? null : {
+        ...current,
+        state: "failed",
+        lastError: snapshotError.message,
+      }),
+    );
+  }, [liveEnrollmentId, organizationId, refresh]);
 
   return (
     <>
@@ -114,7 +139,17 @@ export default function EmployeesPage() {
 
       <MappingModal identity={mapping} employees={data?.employees ?? []} organizationId={user?.organizationId ?? ""} onClose={() => setMapping(null)} onMapped={(identityId) => { setHiddenMappings((current) => [...current, identityId]); setMapping(null); refresh(); }} />
       <CreateEmployeeModal open={creating} organizationId={user?.organizationId ?? ""} branches={data?.branches ?? []} departments={data?.departments ?? []} devices={data?.devices ?? []} onClose={() => setCreating(false)} onCreated={() => { setCreating(false); refresh(); }} />
-      <EnrollmentModal employee={enrolling} organizationId={user?.organizationId ?? ""} devices={data?.devices ?? []} onClose={() => setEnrolling(null)} onQueued={refresh} />
+      <EnrollmentModal
+        employee={enrolling}
+        organizationId={user?.organizationId ?? ""}
+        devices={data?.devices ?? []}
+        liveEnrollment={liveEnrollment}
+        onClose={() => {
+          setEnrolling(null);
+          if (liveEnrollment?.state === "enrolled" || liveEnrollment?.state === "failed") setLiveEnrollment(null);
+        }}
+        onQueued={(enrollmentId) => setLiveEnrollment({ id: enrollmentId, state: "queued", lastError: null })}
+      />
     </>
   );
 }
@@ -141,11 +176,32 @@ function CreateEmployeeModal({ open, organizationId, branches, departments, devi
   </div><BiometricNote title="No fingerprint is collected in this form." text="Enrollment happens directly on the selected terminal after the employee is created." /><div className="form-actions"><Button type="button" variant="secondary" onClick={onClose}>Cancel</Button><Button type="submit" disabled={submitting || branchId === ""}>{submitting ? "Creating…" : "Create employee"}</Button></div></form></Modal>;
 }
 
-function EnrollmentModal({ employee, organizationId, devices, onClose, onQueued }: { employee: Employee | null; organizationId: string; devices: Device[]; onClose(): void; onQueued(): void }) {
+function EnrollmentModal({ employee, organizationId, devices, liveEnrollment, onClose, onQueued }: {
+  employee: Employee | null;
+  organizationId: string;
+  devices: Device[];
+  liveEnrollment: { id: string; state: DeviceEnrollment["state"]; lastError: string | null } | null;
+  onClose(): void;
+  onQueued(enrollmentId: string): void;
+}) {
   const [deviceId, setDeviceId] = useState(""); const [fingerPrintId, setFingerPrintId] = useState(1); const [submitting, setSubmitting] = useState(false); const [queued, setQueued] = useState(false); const [error, setError] = useState<string | null>(null);
-  async function submit(event: FormEvent) { event.preventDefault(); if (employee === null) return; setSubmitting(true); setError(null); try { await requestFingerprintEnrollment({ organizationId, employeeId: employee.id, deviceId, fingerPrintId }); setQueued(true); onQueued(); } catch (submitError) { setError(submitError instanceof Error ? submitError.message : "Fingerprint enrollment could not be queued"); } finally { setSubmitting(false); } }
+  async function submit(event: FormEvent) { event.preventDefault(); if (employee === null) return; setSubmitting(true); setError(null); try { const result = await requestFingerprintEnrollment({ organizationId, employeeId: employee.id, deviceId, fingerPrintId }); setQueued(true); if (typeof result.enrollmentId === "string" && result.enrollmentId !== "") onQueued(result.enrollmentId); } catch (submitError) { setError(submitError instanceof Error ? submitError.message : "Fingerprint enrollment could not be queued"); } finally { setSubmitting(false); } }
   function close() { setQueued(false); setError(null); onClose(); }
-  return <Modal open={employee !== null} title="Enroll fingerprint" description={employee ? `${employee.employeeCode} · ${employee.name}` : ""} onClose={close}>{employee ? queued ? <div className="modal-content"><div className="enrollment-instruction"><span><Fingerprint size={28} /></span><div><strong>Place the employee’s finger on the terminal now</strong><p>HikBridge will create or update the terminal user, capture the selected finger, and report only status and quality to the cloud.</p></div></div><div className="form-actions"><Button onClick={close}>Done</Button></div></div> : <form className="modal-content" onSubmit={submit}>{error ? <ErrorState message={error} /> : null}<div className="form-grid"><div className="form-field form-field-full"><label htmlFor="enrollment-device">Terminal</label><select id="enrollment-device" required value={deviceId} onChange={(event) => setDeviceId(event.target.value)}><option value="">Select terminal</option>{devices.filter((device) => device.branchId === employee.branchId && device.connectionStatus !== "disabled").map((device) => <option key={device.id} value={device.id}>{device.name} · {device.connectionStatus}</option>)}</select></div><div className="form-field form-field-full"><label htmlFor="enrollment-finger">Finger slot</label><select id="enrollment-finger" value={fingerPrintId} onChange={(event) => setFingerPrintId(Number(event.target.value))}>{Array.from({ length: 10 }, (_, index) => <option key={index + 1} value={index + 1}>Finger {index + 1}</option>)}</select></div></div><BiometricNote title="The command expires after five minutes." text="Have the employee standing at the selected terminal before starting." /><div className="form-actions"><Button type="button" variant="secondary" onClick={close}>Cancel</Button><Button type="submit" disabled={submitting || deviceId === ""}>{submitting ? "Starting…" : "Start enrollment"}</Button></div></form> : null}</Modal>;
+  const state = liveEnrollment?.state ?? (queued ? "queued" : null);
+  const instruction = state === "capturing" ? {
+    title: "Place the employee’s finger on the terminal now",
+    text: "The terminal is ready and waiting for the selected finger.",
+  } : state === "enrolled" ? {
+    title: "Fingerprint enrolled successfully",
+    text: "The terminal confirmed the selected finger and only status and quality were returned to the cloud.",
+  } : state === "failed" ? {
+    title: "Fingerprint enrollment failed",
+    text: liveEnrollment?.lastError ?? "The terminal could not complete enrollment. Review the error and try again.",
+  } : {
+    title: "Preparing the terminal",
+    text: "HikBridge is receiving the command and preparing the employee. Wait for the touch-scanner instruction.",
+  };
+  return <Modal open={employee !== null} title="Enroll fingerprint" description={employee ? `${employee.employeeCode} · ${employee.name}` : ""} onClose={close}>{employee ? queued ? <div className="modal-content"><div className="enrollment-instruction" data-state={state ?? "queued"}><span><Fingerprint size={28} /></span><div><strong>{instruction.title}</strong><p>{instruction.text}</p></div></div><div className="form-actions"><Button onClick={close}>{state === "enrolled" || state === "failed" ? "Done" : "Run in background"}</Button></div></div> : <form className="modal-content" onSubmit={submit}>{error ? <ErrorState message={error} /> : null}<div className="form-grid"><div className="form-field form-field-full"><label htmlFor="enrollment-device">Terminal</label><select id="enrollment-device" required value={deviceId} onChange={(event) => setDeviceId(event.target.value)}><option value="">Select terminal</option>{devices.filter((device) => device.branchId === employee.branchId && device.connectionStatus !== "disabled").map((device) => <option key={device.id} value={device.id}>{device.name} · {device.connectionStatus}</option>)}</select></div><div className="form-field form-field-full"><label htmlFor="enrollment-finger">Finger slot</label><select id="enrollment-finger" value={fingerPrintId} onChange={(event) => setFingerPrintId(Number(event.target.value))}>{Array.from({ length: 10 }, (_, index) => <option key={index + 1} value={index + 1}>Finger {index + 1}</option>)}</select></div></div><BiometricNote title="The command expires after five minutes." text="Have the employee standing at the selected terminal before starting." /><div className="form-actions"><Button type="button" variant="secondary" onClick={close}>Cancel</Button><Button type="submit" disabled={submitting || deviceId === ""}>{submitting ? "Starting…" : "Start enrollment"}</Button></div></form> : null}</Modal>;
 }
 
 function BiometricNote({ title, text }: { title: string; text: string }) { return <div className="biometric-note"><Fingerprint size={17} /><span><strong>{title}</strong><small>{text}</small></span></div>; }

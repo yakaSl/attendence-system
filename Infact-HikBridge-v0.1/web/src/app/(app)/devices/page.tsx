@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Copy, KeyRound, MapPin, Plus, Power, RotateCw, Wifi, WifiOff } from "lucide-react";
+import { Check, Copy, Download, KeyRound, MapPin, MonitorDown, Plus, Power, RotateCw, ShieldCheck, Wifi, WifiOff } from "lucide-react";
 import { useCallback, useState, type FormEvent } from "react";
 
 import { Button, EmptyState, ErrorState, LoadingState, Modal, PageHeader, Panel, RoleGate, StatusBadge } from "@/components/ui";
@@ -13,6 +13,8 @@ import { slugifyIdentifier } from "@/lib/onboarding";
 import { useAsyncData } from "@/lib/use-async-data";
 
 interface DeviceData { devices: Device[]; branches: Branch[] }
+
+const installerDownloadPath = "/downloads/hikbridge";
 
 export default function DevicesPage() {
   const { user } = useAuth();
@@ -53,6 +55,20 @@ export default function DevicesPage() {
         description="Monitor Hikvision terminal connectivity and manage bridge enrollment without exposing stored secrets."
         actions={canManage ? <><Button variant="secondary" onClick={() => setAddingBranch(true)}><MapPin size={14} />Add branch</Button><Button onClick={() => setProvisioning(true)}><Plus size={14} />Provision device</Button></> : undefined}
       />
+      <section className="bridge-download-strip" aria-labelledby="bridge-download-title">
+        <div className="bridge-download-copy">
+          <span className="bridge-download-icon"><MonitorDown size={22} aria-hidden /></span>
+          <div>
+            <p className="eyebrow">Windows bridge</p>
+            <h2 id="bridge-download-title">Install HikBridge on the terminal PC</h2>
+            <p>Connect the Hikvision terminal to this workspace and keep attendance syncing automatically after Windows restarts.</p>
+          </div>
+        </div>
+        <div className="bridge-download-actions">
+          <span><ShieldCheck size={14} aria-hidden />Signed Windows installer</span>
+          <a className="button button-primary" href={installerDownloadPath} target="_blank" rel="noreferrer"><Download size={15} aria-hidden />Download HikBridge</a>
+        </div>
+      </section>
       <div className="device-summary-line"><span><i data-status="online" />{data?.devices.filter((device) => device.connectionStatus === "online").length ?? 0} online</span><span><i data-status="offline" />{data?.devices.filter((device) => device.connectionStatus === "offline").length ?? 0} offline</span><span><i data-status="disabled" />{data?.devices.filter((device) => device.connectionStatus === "disabled").length ?? 0} disabled</span><span><MapPin size={11} />{branches.length} {branches.length === 1 ? "branch" : "branches"}</span></div>
       <Panel title="Registered bridges" description="Heartbeat data comes from authenticated ingestion requests">
         {loading ? <LoadingState label="Loading devices" /> : error ? <ErrorState message={error} /> : !data || data.devices.length === 0 ? <EmptyState title="No bridges registered" message="Provision a bridge and install its one-time credential on the customer PC." /> : (
@@ -119,5 +135,5 @@ function ProvisionModal({ open, organizationId, branches, onClose, onProvisioned
 function CredentialModal({ credential, onClose }: { credential: { deviceId: string; bridgeKey: string; graceMinutes?: number } | null; onClose(): void }) {
   const [copied, setCopied] = useState(false);
   async function copy() { if (!credential) return; await navigator.clipboard.writeText(credential.bridgeKey); setCopied(true); }
-  return <Modal open={credential !== null} title="Store this bridge credential now" description="It will not be available from the dashboard after this window closes." onClose={onClose}>{credential ? <div className="modal-content"><div className="credential-warning"><KeyRound size={18} /><span><strong>{credential.deviceId}</strong><small>{credential.graceMinutes ? `Previous credential remains valid for ${credential.graceMinutes} minutes.` : "New device registration."}</small></span></div><label className="credential-box"><span>Bridge key</span><code>{credential.bridgeKey}</code><button type="button" onClick={copy}>{copied ? <Check size={15} /> : <Copy size={15} />}{copied ? "Copied" : "Copy"}</button></label><ol className="credential-steps"><li>Place the key in HikBridge `cloud.bridgeKey` configuration.</li><li>Confirm the deployed HTTPS ingestion endpoint.</li><li>Run `hikbridge.exe test-cloud`, then restart the service.</li></ol><div className="form-actions"><Button onClick={onClose}>I stored the key</Button></div></div> : null}</Modal>;
+  return <Modal open={credential !== null} title="Store this bridge credential now" description="It will not be available from the dashboard after this window closes." onClose={onClose}>{credential ? <div className="modal-content"><div className="credential-warning"><KeyRound size={18} /><span><strong>{credential.deviceId}</strong><small>{credential.graceMinutes ? `Previous credential remains valid for ${credential.graceMinutes} minutes.` : "New device registration."}</small></span></div><label className="credential-box"><span>Bridge key</span><code>{credential.bridgeKey}</code><button type="button" onClick={copy}>{copied ? <Check size={15} /> : <Copy size={15} />}{copied ? "Copied" : "Copy"}</button></label><ol className="credential-steps"><li>Download and install HikBridge on a Windows PC connected to the terminal.</li><li>Open Manage HikBridge and enter this device ID and bridge key.</li><li>Test both connections, then select Save &amp; start service.</li></ol><div className="form-actions form-actions-split"><a className="button button-secondary" href={installerDownloadPath} target="_blank" rel="noreferrer"><Download size={14} aria-hidden />Download installer</a><Button onClick={onClose}>I stored the key</Button></div></div> : null}</Modal>;
 }

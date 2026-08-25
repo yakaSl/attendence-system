@@ -1,0 +1,33 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "bridgeRealtime": {
+      "v1": {
+        "control": {
+          "$organizationId": {
+            "$deviceId": {
+              ".read": "auth != null && auth.token.bridge == true && auth.token.organizationId == $organizationId && auth.token.bridgeDeviceId == $deviceId",
+              ".write": false
+            }
+          }
+        },
+        "presence": {
+          "$organizationId": {
+            "$deviceId": {
+              ".read": "auth != null && auth.token.bridge == true && auth.token.organizationId == $organizationId && auth.token.bridgeDeviceId == $deviceId",
+              ".write": "auth != null && auth.token.bridge == true && auth.token.organizationId == $organizationId && auth.token.bridgeDeviceId == $deviceId",
+              ".validate": "newData.hasChildren(['connected', 'terminalConnected', 'pendingEvents', 'bridgeVersion', 'updatedAt'])",
+              "connected": { ".validate": "newData.isBoolean()" },
+              "terminalConnected": { ".validate": "newData.isBoolean()" },
+              "pendingEvents": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000000" },
+              "bridgeVersion": { ".validate": "newData.isString() && newData.val().length <= 64" },
+              "updatedAt": { ".validate": "newData.isNumber()" },
+              "$other": { ".validate": false }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -23,7 +23,7 @@ export default function BillingPage() {
   const plan = planById(subscription?.planId);
 
   async function openPortal() {
-    if (user === null) return;
+    if (user === null || user.organizationId === null) return;
     setPortalLoading(true);
     setPortalError(null);
     try {

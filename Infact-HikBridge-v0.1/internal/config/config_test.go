@@ -41,7 +41,7 @@ func TestLoadAppliesDefaultsAndLoadsIANAZone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Service.PollIntervalSeconds != 5 || config.Service.StatusIntervalSeconds != 60 || config.Hikvision.PageSize != 30 || config.Cloud.BatchSize != 100 {
+	if config.Service.PollIntervalSeconds != 5 || config.Service.StatusIntervalSeconds != 240 || config.Hikvision.PageSize != 30 || config.Cloud.BatchSize != 100 {
 		t.Fatalf("defaults not applied: %+v", config)
 	}
 	location, err := config.DeviceLocation()

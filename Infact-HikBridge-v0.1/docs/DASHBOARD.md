@@ -20,7 +20,7 @@ The application uses Next.js 16 App Router, React 19, TypeScript, Tailwind CSS 4
 
 All routes are responsive. On narrow screens the rail becomes an overlay and secondary operational columns collapse before primary identity/status content.
 
-HikBridge sends a signed health report every 60 seconds. The Devices view honors the terminal's reported online/offline state and treats five minutes without bridge contact as offline, which also covers a stopped PC/service. Health metadata never includes the terminal password, bridge key, signature, or private LAN address.
+HikBridge sends a signed health report every four minutes. The Devices view honors the terminal's reported online/offline state and treats six minutes without bridge contact as offline, which also covers a stopped PC/service. Health metadata never includes the terminal password, bridge key, signature, or private LAN address.
 
 ## Authentication and tenant selection
 

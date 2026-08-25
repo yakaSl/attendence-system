@@ -149,7 +149,7 @@ const pageHTML = `<!doctype html>
             <label>Bridge credential<input id="bridge-credential" type="password" autocomplete="new-password" placeholder="Paste the one-time credential"></label>
             <label class="check span-2"><input id="cloud-enabled" type="checkbox" checked>Enable cloud synchronization</label>
           </div>
-          <details><summary>Advanced cloud options</summary><div class="grid"><label class="span-2">Cloud ingestion endpoint<input id="ingest-url" type="url" placeholder="https://region-project.cloudfunctions.net/hikbridgeV1Events"></label></div></details>
+          <details><summary>Advanced cloud options</summary><div class="grid"><label class="span-2">Cloud ingestion endpoint<input id="ingest-url" type="url" placeholder="https://region-project.cloudfunctions.net/hikbridgeV1Events"></label><label class="check span-2"><input id="realtime-enabled" type="checkbox">Use realtime command delivery</label><label class="span-2">Realtime session endpoint<input id="realtime-session-url" type="url" placeholder="https://region-project.cloudfunctions.net/hikbridgeV1Session"></label></div></details>
           <div class="actions"><button id="test-cloud" type="button">Test cloud</button><div id="cloud-result" class="result" aria-live="polite">The test verifies the installation code and credential.</div></div>
         </section>
 
@@ -188,7 +188,9 @@ const pageHTML = `<!doctype html>
           enabled: byId("cloud-enabled").checked,
           installationCode: byId("installation-code").value.trim(),
           bridgeCredential: byId("bridge-credential").value,
-          ingestUrl: byId("ingest-url").value.trim()
+          ingestUrl: byId("ingest-url").value.trim(),
+          realtimeEnabled: byId("realtime-enabled").checked,
+          realtimeSessionUrl: byId("realtime-session-url").value.trim()
         },
         service: { pollIntervalSeconds: Number(byId("poll").value) }
       };
@@ -298,6 +300,8 @@ const pageHTML = `<!doctype html>
         byId("installation-code").value = state.installationCode;
         byId("cloud-enabled").checked = state.cloudEnabled || !state.configured;
         byId("ingest-url").value = state.ingestUrl;
+        byId("realtime-enabled").checked = state.realtimeEnabled;
+        byId("realtime-session-url").value = state.realtimeSessionUrl;
         byId("poll").value = String(state.pollIntervalSeconds);
         if (state.hasDevicePassword) byId("password").placeholder = "Stored securely — leave blank to keep";
         if (state.hasBridgeCredential) byId("bridge-credential").placeholder = "Stored securely — leave blank to keep";

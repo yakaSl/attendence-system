@@ -7,6 +7,7 @@ import {
   initializeTestEnvironment,
   type RulesTestEnvironment,
 } from "@firebase/rules-unit-testing";
+import { get, ref as databaseRef, set } from "firebase/database";
 import { doc, getDoc, serverTimestamp, setDoc, updateDoc, writeBatch, type Firestore } from "firebase/firestore";
 import { afterAll, afterEach, beforeAll, describe, it } from "vitest";
 
@@ -19,11 +20,15 @@ beforeAll(async () => {
     firestore: {
       rules: await readFile(resolve(process.cwd(), "firestore.rules"), "utf8"),
     },
+    database: {
+      rules: await readFile(resolve(process.cwd(), "database.rules.json"), "utf8"),
+    },
   });
 });
 
 afterEach(async () => {
   await environment.clearFirestore();
+  await environment.clearDatabase();
 });
 
 afterAll(async () => {
@@ -266,5 +271,40 @@ describe("Firestore tenant and role isolation", () => {
     await assertSucceeds(getDoc(doc(hr, "organizations/org-a/shifts/NORMAL")));
     await assertFails(updateDoc(doc(hr, "organizations/org-a/shifts/NORMAL"), { gracePeriodMinutes: 30 }));
     await assertFails(setDoc(doc(hr, "organizations/org-a/shiftAssignments/direct-write"), { employeeId: "employee-1", shiftId: "NORMAL" }));
+  });
+});
+
+describe("Realtime Database bridge isolation", () => {
+  it("allows a bridge to read only its command signal and write only its presence", async () => {
+    await environment.withSecurityRulesDisabled(async (context) => {
+      await set(databaseRef(context.database(), "bridgeRealtime/v1/control/org-a/device-1"), {
+        commandId: "command-1",
+        revision: "1-command-1",
+        updatedAt: 1,
+      });
+    });
+    const bridge = environment.authenticatedContext("bridge-device-1", {
+      bridge: true,
+      organizationId: "org-a",
+      bridgeDeviceId: "device-1",
+    }).database();
+    await assertSucceeds(get(databaseRef(bridge, "bridgeRealtime/v1/control/org-a/device-1")));
+    await assertFails(get(databaseRef(bridge, "bridgeRealtime/v1/control/org-a/device-2")));
+    await assertFails(set(databaseRef(bridge, "bridgeRealtime/v1/control/org-a/device-1"), { commandId: "changed" }));
+    await assertSucceeds(set(databaseRef(bridge, "bridgeRealtime/v1/presence/org-a/device-1"), {
+      connected: true,
+      terminalConnected: true,
+      pendingEvents: 0,
+      bridgeVersion: "0.2.0",
+      updatedAt: 1,
+    }));
+    await assertFails(set(databaseRef(bridge, "bridgeRealtime/v1/presence/org-a/device-1"), {
+      connected: true,
+      terminalConnected: true,
+      pendingEvents: 0,
+      bridgeVersion: "0.2.0",
+      updatedAt: 1,
+      unauthorized: true,
+    }));
   });
 });

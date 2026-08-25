@@ -169,7 +169,7 @@ An ingestion success alone cannot distinguish an idle healthy terminal from a di
 
 Decision:
 
-Send bridge status through the same versioned HMAC request as attendance events. Project last contact, device metadata, terminal connectivity, last successful poll, and queue depth into the tenant device record. In the dashboard, infer offline after five minutes without contact while preserving an explicit disabled state.
+Send bridge status through the same versioned HMAC request as attendance events. Project last contact, device metadata, terminal connectivity, last successful poll, and queue depth into the tenant device record. In the dashboard, infer offline after six minutes without contact while preserving an explicit disabled state.
 
 Reason:
 

@@ -6,6 +6,7 @@
 - HikBridge is trusted only after per-device HMAC verification. It cannot use Firebase Admin APIs.
 - Cloud Functions are the only writers for raw events, derived attendance, device status, credentials, mapping audits, adjustment audits, and report outputs.
 - Browser users authenticate with Firebase Authentication and remain constrained by Firestore Security Rules and callable authorization.
+- Realtime bridge sessions use short-lived Firebase custom tokens whose claims restrict RTDB reads to one organization/device control path. Firestore commands and the per-device HMAC remain authoritative.
 - Firestore Admin SDK and Secret Manager access belong to service accounts with least privilege.
 
 ## Local administrator setup
@@ -57,6 +58,8 @@ Raw attendance events deny all browser writes, including platform-admin clients.
 Employee creation and fingerprint enrollment are HR/owner callables. Browsers cannot write the employee-code registry, device command queue, command lock, or enrollment projection. A command is accepted only by the HMAC-authenticated bridge registered to that exact organization/device, and a terminal must belong to the employee's branch. Only one unexpired fingerprint prompt can be active per terminal.
 
 Biometric templates never cross the cloud trust boundary. The bridge keeps a captured template in memory only long enough to assign it back to the same LAN terminal. Local durable state and Firestore contain command/result metadata only: employee identifiers, finger slot, state, quality, timestamps, and bounded error text.
+
+Realtime Database contains only an overwrite-only command ID/revision signal. A signal cannot create, alter, or authorize a command. Global RTDB access is denied; a bridge token can read only its own signal and can write only its strictly validated presence record. Emulator tests verify same-tenant and cross-device denial.
 
 ## Tenant isolation
 

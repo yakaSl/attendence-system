@@ -70,13 +70,17 @@ The bridge always upserts the terminal user before capture, so enrollment also w
 | Enrolled | The terminal accepted the fingerprint; quality is stored as metadata. |
 | Enrollment failed | The command expired, capture failed, or the reader rejected setup. The error is available as the fingerprint control tooltip. |
 
+Realtime-enabled bridges receive the wake immediately instead of waiting for a periodic command poll. During an active enrollment, the browser listens only to that enrollment document instead of reloading the Employees page every three seconds. HikBridge also avoids repeating a terminal user upsert that it has already confirmed for the same employee number and name; a stale cache is repaired automatically if fingerprint assignment reports that the terminal user is missing.
+
+To protect important attendance transfer, the bridge performs a device event poll immediately before entering the exclusive fingerprint-capture operation and again immediately afterward. Events created during capture remain buffered by the terminal and are uploaded as soon as the post-capture poll makes them durable locally.
+
 ## Diagnostics
 
 Check bridge command activity without exposing biometric content:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8765/status |
-  Select-Object deviceConnected,lastCommandPoll,lastCommandError,activeCommandId,activeCommandType,pendingCommandResults,commandsReceived,commandsSucceeded,commandsFailed
+  Select-Object deviceConnected,realtimeConnected,lastRealtimeConnect,lastRealtimeError,lastCommandPoll,lastCommandError,activeCommandId,activeCommandType,pendingCommandResults,commandsReceived,commandsSucceeded,commandsFailed
 ```
 
 If the cloud page remains at **Enrollment queued**, confirm the updated bridge is running and can reach the cloud. If it reaches **Enrollment failed**, inspect `lastCommandError` and the local bridge log. Common causes are no finger presented before timeout, low capture quality, a full/offline fingerprint reader, invalid terminal credentials, or a terminal assigned to a different branch.

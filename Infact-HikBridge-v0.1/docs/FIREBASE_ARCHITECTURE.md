@@ -5,6 +5,7 @@
 ```text
 Hikvision terminal
   -> Infact HikBridge (durable local queue)
+  <- Firebase Realtime Database device wake stream
   -> HTTPS Cloud Function: hikbridgeV1Events
   -> per-device HMAC verification + replay claim
   -> immutable organizations/{org}/attendanceEvents/{eventId}
@@ -45,7 +46,9 @@ Bridge device IDs are globally unique within a Firebase project in protocol v1 b
 
 A network timeout after commit is safe because retrying the deterministic event IDs returns duplicates.
 
-The bridge also sends a signed probe every 60 seconds with terminal connectivity, last successful poll, pending local count, and bounded model/serial/firmware metadata. A probe creates no attendance event. It updates device `lastSeen` and online/offline state; the dashboard independently treats five minutes without any bridge contact as offline so a stopped service cannot remain falsely online.
+The bridge sends a signed status heartbeat no more frequently than every four minutes with terminal connectivity, last successful poll, pending local count, and bounded model/serial/firmware metadata. A heartbeat creates no attendance event. It updates device `lastSeen` and online/offline state; the dashboard independently treats six minutes without any bridge contact as offline so a stopped service cannot remain falsely online. Attendance batches and command signals wake their own paths immediately and do not wait for this heartbeat.
+
+Firestore is the durable command queue. Realtime Database stores one overwrite-only wake signal per organization/device. A signed HMAC session Function issues a short-lived custom token whose Rules claims can read only that bridge's signal. The persistent stream removes idle command polling; reconnect reconciliation and bounded fallback polling preserve delivery during RTDB outages.
 
 ## Secrets and provisioning
 
@@ -69,7 +72,7 @@ Identity mapping does not backfill fields into raw events. A scheduled, single-i
 
 ## Regions, limits, and costs
 
-Initial Functions use `asia-south1` to keep latency near Sri Lankan deployments. Organizations carry an IANA timezone and attendance calculations must use it rather than the Functions runtime timezone.
+Initial Functions use `asia-south1` to keep latency near Sri Lankan deployments. Realtime Database uses the nearest supported Asian location, `asia-southeast1`. Organizations carry an IANA timezone and attendance calculations must use it rather than the Functions runtime timezone.
 
 The ingestion limit is 100 events and 1 MiB per request, with 64 KiB maximum raw JSON per event. A successful new-event batch consumes reads for event existence/mappings plus raw-event/unmapped/device writes. Retry batches incur reads but no duplicate raw writes. Composite indexes are limited to known dashboard and processing queries.
 
@@ -77,7 +80,7 @@ Replay records have `expiresAt`; production should enable a Firestore TTL policy
 
 ## Local development
 
-The cloud workspace uses TypeScript, Vitest, Firebase Emulator Suite, and Firestore Rules unit tests.
+The cloud workspace uses TypeScript, Vitest, Firebase Emulator Suite, and Firestore plus Realtime Database Rules unit tests.
 
 ```powershell
 cd cloud

@@ -7,7 +7,7 @@ coverage.out
 node_modules/
 .next/
 *.tsbuildinfo
-lib/
+/cloud/functions/lib/
 coverage/
 .firebase/
 firebase-debug.log

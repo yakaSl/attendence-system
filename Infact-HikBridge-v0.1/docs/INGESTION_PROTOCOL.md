@@ -104,7 +104,7 @@ The running bridge sends the same probe periodically with a bounded status objec
 
 Status is accepted only on a probe. Text fields are capped at 128 characters and the pending count at 1,000,000. It does not contain errors, credentials, employee data, or LAN addresses. A status probe updates the public tenant device projection; omission remains valid for interactive `test-cloud` compatibility.
 
-The running bridge also uses a probe as a bidirectional command exchange. Only that loop sets `acceptCommands`; interactive cloud tests and ordinary status probes cannot lease work. Completed results are retained locally until their IDs are acknowledged:
+The running bridge also uses a probe as a bidirectional command exchange. Only the command-delivery loop sets `acceptCommands`; interactive cloud tests and ordinary status probes cannot lease work. Completed results are retained locally until their IDs are acknowledged:
 
 ```json
 {
@@ -125,6 +125,8 @@ The running bridge also uses a probe as a bidirectional command exchange. Only t
 ```
 
 The cloud may respond with at most one leased terminal command. Supported types are `upsert_user` and `enroll_fingerprint`. An enrollment command contains employee identity fields and a finger slot only. It never contains `fingerData` or another biometric template. The bridge captures the template from the local terminal, sends it immediately back to that terminal, and reports only terminal status, finger slot, and quality.
+
+When realtime delivery is enabled, a separate signed `hikbridgeV1Session` request exchanges the device HMAC identity for a short-lived Firebase custom token scoped to that device's RTDB control path. RTDB contains only the latest wake signal. Receipt of a signal causes this normal signed command exchange; it does not transfer or authorize the command itself. See `REALTIME_COMMAND_DELIVERY.md`.
 
 ## Success response
 

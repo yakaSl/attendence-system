@@ -19,7 +19,7 @@ Hikvision DS-K1A8503EF
   -> authenticated Next.js HR operations dashboard
 ```
 
-See [Architecture](docs/ARCHITECTURE.md), [Hikvision integration](docs/HIKVISION_INTEGRATION.md), [cloud fingerprint enrollment](docs/FINGERPRINT_ENROLLMENT.md), [Firebase architecture](docs/FIREBASE_ARCHITECTURE.md), [SaaS deployment](docs/SAAS_DEPLOYMENT.md), and [Security model](docs/SECURITY_MODEL.md).
+See [Architecture](docs/ARCHITECTURE.md), [realtime command delivery](docs/REALTIME_COMMAND_DELIVERY.md), [Hikvision integration](docs/HIKVISION_INTEGRATION.md), [cloud fingerprint enrollment](docs/FINGERPRINT_ENROLLMENT.md), [Firebase architecture](docs/FIREBASE_ARCHITECTURE.md), [SaaS deployment](docs/SAAS_DEPLOYMENT.md), and [Security model](docs/SECURITY_MODEL.md).
 
 ## Repository layout
 
@@ -99,11 +99,11 @@ Use `--raw` on `test-events` only during controlled support work because device 
 
 ## Firebase setup
 
-1. Create a staging Firebase/Google Cloud project and enable Firestore, Firebase Authentication, Cloud Functions, Secret Manager, and Cloud Scheduler.
+1. Create a staging Firebase/Google Cloud project and enable Firestore, Realtime Database, Firebase Authentication, Cloud Functions, Secret Manager, and Cloud Scheduler. Create Realtime Database in `asia-southeast1`.
 2. Review `cloud/firebase.json`, deploy `cloud/firestore.rules` and `cloud/firestore.indexes.json`, and enable TTL on `_bridgeReplay.expiresAt`.
 3. Grant the Functions runtime only the Secret Manager and Firebase permissions required by the documented workflows.
 4. Deploy Functions from `cloud/`; the bridge ingestion function is `hikbridgeV1Events` in `asia-south1`.
-5. Configure Firebase web values in `web/.env.local` from `web/.env.example`; never put a service-account key in the dashboard.
+5. Configure Firebase web values in `web/.env.local` from `web/.env.example`, and configure the bridge realtime Function values from `cloud/functions/.env.example`; never put a service-account key in the dashboard.
 6. Deploy Firestore Rules and the production dashboard with `NEXT_PUBLIC_DEMO_MODE=false`. A signed-in user without a default organization is sent through the required organization setup wizard.
 7. Provision a device from `/devices` and capture the bridge credential shown once.
 
@@ -137,7 +137,7 @@ Automated coverage includes Digest authentication, Hikvision fixture pagination,
 - Production cloud URLs require HTTPS; development HTTP is accepted only on loopback with an explicit flag.
 - Stored Hikvision and bridge secrets are never returned by local setup and are protected by ProgramData ACLs.
 - Pending/failed event evidence is retained. Cloud-acknowledged local records expire after the configured retention period (90 days by default).
-- The bridge sends signed health reports every 60 seconds; the dashboard treats five minutes without a report as offline.
+- The bridge sends signed health reports every four minutes; the dashboard treats six minutes without contact as offline.
 - Logs rotate and never intentionally include passwords, bridge keys, HMAC signatures, or full configuration.
 
 For operational failures use [Troubleshooting](docs/TROUBLESHOOTING.md). The current release verdict and remaining gates are in [Production readiness](docs/PRODUCTION_READINESS.md).

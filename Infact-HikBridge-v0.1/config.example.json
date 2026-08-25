@@ -4,7 +4,7 @@
     "initialLookbackHours": 24,
     "overlapSeconds": 120,
     "syncIntervalSeconds": 5,
-    "statusIntervalSeconds": 60,
+    "statusIntervalSeconds": 240,
     "localStatusAddress": "127.0.0.1:8765",
     "dataDir": "C:\\ProgramData\\Infact\\HikBridge",
     "logMaxMegabytes": 20,
@@ -24,8 +24,10 @@
   },
   "cloud": {
     "enabled": false,
-    "ingestUrl": "https://YOUR_REGION-YOUR_PROJECT.cloudfunctions.net/ingestHikvisionEvents",
+    "ingestUrl": "https://YOUR_REGION-YOUR_PROJECT.cloudfunctions.net/hikbridgeV1Events",
     "bridgeKey": "CHANGE_ME_TO_A_LONG_RANDOM_PER_DEVICE_SECRET",
+    "realtimeEnabled": false,
+    "realtimeSessionUrl": "https://YOUR_REGION-YOUR_PROJECT.cloudfunctions.net/hikbridgeV1Session",
     "batchSize": 100,
     "requestTimeoutSeconds": 15,
     "allowInsecureHttp": false

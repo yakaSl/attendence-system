@@ -53,6 +53,8 @@ type CloudConfig struct {
 	Enabled               bool   `json:"enabled"`
 	IngestURL             string `json:"ingestUrl"`
 	BridgeKey             string `json:"bridgeKey"`
+	RealtimeEnabled       bool   `json:"realtimeEnabled"`
+	RealtimeSessionURL    string `json:"realtimeSessionUrl,omitempty"`
 	BatchSize             int    `json:"batchSize"`
 	RequestTimeoutSeconds int    `json:"requestTimeoutSeconds"`
 	AllowInsecureHTTP     bool   `json:"allowInsecureHttp"`
@@ -143,7 +145,7 @@ func (c *Config) applyDefaults() {
 		c.Service.SyncIntervalSeconds = 5
 	}
 	if c.Service.StatusIntervalSeconds == 0 {
-		c.Service.StatusIntervalSeconds = 60
+		c.Service.StatusIntervalSeconds = 240
 	}
 	if c.Service.LocalStatusAddress == "" {
 		c.Service.LocalStatusAddress = "127.0.0.1:8765"
@@ -255,6 +257,14 @@ func (c *Config) Validate() error {
 		}
 		if err := validateCloudURL(c.Cloud.IngestURL, c.Cloud.AllowInsecureHTTP); err != nil {
 			return fmt.Errorf("cloud.ingestUrl: %w", err)
+		}
+		if c.Cloud.RealtimeEnabled {
+			if strings.TrimSpace(c.Cloud.RealtimeSessionURL) == "" {
+				return errors.New("cloud.realtimeSessionUrl is required when cloud.realtimeEnabled=true")
+			}
+			if err := validateCloudURL(c.Cloud.RealtimeSessionURL, c.Cloud.AllowInsecureHTTP); err != nil {
+				return fmt.Errorf("cloud.realtimeSessionUrl: %w", err)
+			}
 		}
 	}
 	if c.Cloud.BatchSize < 1 || c.Cloud.BatchSize > 100 {

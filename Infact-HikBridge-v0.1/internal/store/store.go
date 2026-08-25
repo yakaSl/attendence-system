@@ -21,6 +21,7 @@ import (
 )
 
 const recordSchemaVersion = 1
+const provisionedUserSchemaVersion = 1
 
 type SyncState string
 
@@ -59,13 +60,21 @@ type EventCounts struct {
 	Failed    int `json:"failed"`
 }
 
+type provisionedUserRecord struct {
+	SchemaVersion int       `json:"schemaVersion"`
+	EmployeeNo    string    `json:"employeeNo"`
+	Name          string    `json:"name"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
 type Store struct {
-	root              string
-	pendingDir        string
-	syncedDir         string
-	failedDir         string
-	commandResultsDir string
-	mu                sync.Mutex
+	root                string
+	pendingDir          string
+	syncedDir           string
+	failedDir           string
+	commandResultsDir   string
+	provisionedUsersDir string
+	mu                  sync.Mutex
 }
 
 var eventIDRE = regexp.MustCompile(`^[a-f0-9]{64}$`)
@@ -74,13 +83,14 @@ var commandResultCodeRE = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 
 func Open(dataDir string) (*Store, error) {
 	s := &Store{
-		root:              dataDir,
-		pendingDir:        filepath.Join(dataDir, "events", "pending"),
-		syncedDir:         filepath.Join(dataDir, "events", "synced"),
-		failedDir:         filepath.Join(dataDir, "events", "failed"),
-		commandResultsDir: filepath.Join(dataDir, "commands", "results"),
+		root:                dataDir,
+		pendingDir:          filepath.Join(dataDir, "events", "pending"),
+		syncedDir:           filepath.Join(dataDir, "events", "synced"),
+		failedDir:           filepath.Join(dataDir, "events", "failed"),
+		commandResultsDir:   filepath.Join(dataDir, "commands", "results"),
+		provisionedUsersDir: filepath.Join(dataDir, "commands", "users"),
 	}
-	for _, dir := range []string{s.pendingDir, s.syncedDir, s.failedDir, s.commandResultsDir} {
+	for _, dir := range []string{s.pendingDir, s.syncedDir, s.failedDir, s.commandResultsDir, s.provisionedUsersDir} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return nil, fmt.Errorf("create event store directory: %w", err)
 		}
@@ -92,6 +102,64 @@ func Open(dataDir string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return nil }
+
+func provisionedUserFilename(employeeNo string) (string, error) {
+	employeeNo = strings.TrimSpace(employeeNo)
+	if employeeNo == "" || len(employeeNo) > 64 {
+		return "", errors.New("employee number must contain between 1 and 64 characters")
+	}
+	digest := sha256.Sum256([]byte(employeeNo))
+	return hex.EncodeToString(digest[:]) + ".json", nil
+}
+
+// IsUserProvisioned reports whether this bridge has already confirmed the same
+// employee identity on its terminal. A missing or stale record safely falls
+// back to the terminal upsert operation.
+func (s *Store) IsUserProvisioned(employeeNo, name string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	filename, err := provisionedUserFilename(employeeNo)
+	if err != nil {
+		return false, err
+	}
+	value, err := os.ReadFile(filepath.Join(s.provisionedUsersDir, filename))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var record provisionedUserRecord
+	if err := json.Unmarshal(value, &record); err != nil {
+		return false, nil
+	}
+	return record.SchemaVersion == provisionedUserSchemaVersion &&
+		record.EmployeeNo == strings.TrimSpace(employeeNo) &&
+		record.Name == strings.TrimSpace(name), nil
+}
+
+// MarkUserProvisioned records a successful terminal user upsert. This cache is
+// an optimization only; enrollment retries the upsert if fingerprint assignment
+// reveals that the terminal user was removed outside HikBridge.
+func (s *Store) MarkUserProvisioned(employeeNo, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	filename, err := provisionedUserFilename(employeeNo)
+	if err != nil {
+		return err
+	}
+	record := provisionedUserRecord{
+		SchemaVersion: provisionedUserSchemaVersion,
+		EmployeeNo:    strings.TrimSpace(employeeNo),
+		Name:          strings.TrimSpace(name),
+		UpdatedAt:     time.Now().UTC(),
+	}
+	value, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode provisioned user: %w", err)
+	}
+	return atomicfile.WriteFile(filepath.Join(s.provisionedUsersDir, filename), value, 0600)
+}
 
 func safeEventFilename(id string) (string, error) {
 	if !eventIDRE.MatchString(id) {
