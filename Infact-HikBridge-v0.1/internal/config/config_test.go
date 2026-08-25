@@ -62,6 +62,31 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestLoadWithCloudEndpointsReplacesLegacyRoutingBeforeValidation(t *testing.T) {
+	value := validConfig()
+	value.Cloud = CloudConfig{
+		Enabled:            true,
+		IngestURL:          "http://legacy.invalid/events",
+		BridgeKey:          "0123456789abcdef0123456789abcdef",
+		RealtimeEnabled:    true,
+		RealtimeSessionURL: "http://legacy.invalid/session",
+	}
+	contents, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadWithCloudEndpoints(writeConfig(t, contents), CloudEndpoints{
+		IngestURL:          "https://cloud.example.test/hikbridgeV1Events",
+		RealtimeSessionURL: "https://cloud.example.test/hikbridgeV1Session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Cloud.IngestURL != "https://cloud.example.test/hikbridgeV1Events" || loaded.Cloud.RealtimeSessionURL != "https://cloud.example.test/hikbridgeV1Session" {
+		t.Fatalf("release endpoints were not applied: %+v", loaded.Cloud)
+	}
+}
+
 func TestValidateRejectsPublicDiagnosticsBind(t *testing.T) {
 	config := validConfig()
 	config.applyDefaults()

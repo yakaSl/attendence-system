@@ -14,7 +14,7 @@ The application uses Next.js 16 App Router, React 19, TypeScript, Tailwind CSS 4
 - `/employees/[employeeId]`: employee context, month navigation, summary metrics, and full daily attendance table.
 - `/attendance`: date/employee/department/status/branch filters and HR-only immutable correction workflow.
 - `/shifts`: validated normal/overnight policy management and date-ranged employee assignments.
-- `/devices`: cloud heartbeat, device state, one-time provisioning credential, rotation, and enable/disable actions. Stored credentials are never queried.
+- `/devices`: cloud heartbeat, device state, one-time provisioning credential, rotation, duplicate-registration enrollment merge, enable/disable, and permanent removal actions. Stored credentials are never queried.
 - `/reports`: seven report views, 31-day/5,000-row interactive cap, and UTF-8 CSV export.
 - `/settings`: organization/timezone/role context, integration signals, role matrix, and trust-boundary reminders.
 
@@ -50,8 +50,14 @@ High-impact writes use authenticated callables:
 - `provisionDevice`
 - `rotateDeviceCredential`
 - `setDeviceEnabled`
+- `mergeDeviceEnrollmentData`
+- `removeDevice`
 
 Shift writes are denied directly by Rules. The callables validate policy fields, authorize HR roles, append audits, and enqueue recalculation. Manual corrections never mutate a raw event. Provision and rotation responses show a new bridge key only once.
+
+Permanent device removal requires typing the exact device ID. The callable disables the registration first, deletes the global bridge registry entry, Secret Manager credential, device document and nested commands, replay markers, device identity mappings, and enrollment state. It writes a `deviceDeletionAudits` record and deliberately retains historical attendance and other audit evidence.
+
+When two installation codes were accidentally configured against the same physical terminal, **Merge duplicate device data** copies the union of employee-number mappings and enrollment metadata into the registration the administrator chooses to retain. Known, unequal terminal serial numbers block the operation, employee-number ownership conflicts fail before any writes, and explicit same-terminal confirmation is mandatory. The source registration is not changed, fingerprint templates remain on the terminal, and `deviceMergeAudits` records the result.
 
 Employee, leave, and holiday CRUD currently remain governed by the existing HR Firestore rules. Leave and holiday document changes enqueue date-range recalculation through server triggers.
 

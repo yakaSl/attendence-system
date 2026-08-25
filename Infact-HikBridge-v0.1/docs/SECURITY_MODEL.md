@@ -37,7 +37,7 @@ Credentials are generated from 256 bits of cryptographic randomness. Secret Mana
 
 Rotation permits old and new credentials for 15 minutes. Disable a device immediately if a credential may be compromised, rotate it, update local HikBridge configuration, run `test-cloud`, and re-enable only after verification. Public installers and documentation never contain customer credentials.
 
-The Functions runtime service account requires Secret Manager accessor on bridge secrets. The provisioning identity additionally requires secret create/version-add permissions. Separate these functions/service accounts in a higher-assurance deployment if organization policy requires it.
+The Functions runtime service account requires Secret Manager accessor on bridge secrets. Device lifecycle callables additionally require secret create, version-add, and secret-delete permissions. Permanent device removal revokes the Firestore registry before deleting the secret and keeps an organization-scoped deletion audit. Separate these functions/service accounts in a higher-assurance deployment if organization policy requires it.
 
 ## Browser authorization
 

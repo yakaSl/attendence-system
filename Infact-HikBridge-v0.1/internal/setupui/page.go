@@ -24,7 +24,10 @@ const pageHTML = `<!doctype html>
     .steps li::before { content:counter(step); width:27px; height:27px; border:1px solid #4e6964; display:grid; place-items:center; font-size:12px; }
     .steps li.active { color:white; }
     .steps li.active::before { border-color:#6bc0b2; background:#21443e; }
-    .rail-foot { margin-top:auto; color:#79918c; font-size:12px; }
+    .rail-foot { margin-top:auto; color:#79918c; font-size:12px; display:grid; gap:8px; }
+    .update-check { justify-self:start; min-height:0; padding:0; border:0; background:transparent; color:#9ac8c0; font-size:12px; font-weight:650; }
+    .update-check:hover { border:0; color:#d5eeea; transform:none; }
+    .update-check:disabled { color:#647c77; }
     main { padding:54px clamp(32px,6vw,88px) 80px; max-width:1040px; width:100%; }
     .topline { display:flex; justify-content:space-between; align-items:end; gap:24px; padding-bottom:24px; border-bottom:1px solid var(--line); }
     .topline h2 { margin:4px 0 0; font-size:25px; letter-spacing:-.035em; }
@@ -64,6 +67,15 @@ const pageHTML = `<!doctype html>
     .save-side .primary { min-height:45px; padding-inline:20px; }
     #global-status { color:var(--muted); font-size:13px; max-width:460px; }
     .notice { padding:13px 15px; background:#f0f5f3; color:#52615e; border-left:3px solid #7aa79f; font-size:13px; line-height:1.5; margin-top:18px; }
+    .update-notice { display:grid; grid-template-columns:40px minmax(0,1fr) auto; align-items:center; gap:16px; margin-top:18px; padding:18px 19px; border:1px solid #9bc8bf; border-left:4px solid var(--teal); background:#edf8f5; animation:enter .35s ease both; }
+    .update-notice[hidden] { display:none; }
+    .update-symbol { width:38px; height:38px; display:grid; place-items:center; border:1px solid #9bc8bf; background:#fff; color:var(--teal); font-size:22px; font-weight:750; }
+    .update-copy h3 { margin:0 0 4px; font-size:16px; letter-spacing:-.015em; }
+    .update-copy p { margin:0; color:#526a65; font-size:12px; line-height:1.5; }
+    .update-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    .update-link { min-height:39px; display:inline-flex; align-items:center; padding:8px 14px; border:1px solid var(--teal); background:var(--teal); color:#fff; text-decoration:none; font-size:12px; font-weight:700; }
+    .update-link.secondary { border-color:#afc8c3; background:#fff; color:#315b53; }
+    .update-dismiss { min-height:39px; padding-inline:11px; background:transparent; }
     .service-console { margin-top:24px; background:var(--service); color:#f4faf8; padding:25px 27px 22px; border:1px solid #29413c; animation:enter .4s ease both; }
     .service-console-head { display:flex; align-items:start; justify-content:space-between; gap:24px; }
     .service-console .eyebrow { color:#81aaa3; }
@@ -96,7 +108,7 @@ const pageHTML = `<!doctype html>
     @keyframes enter { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
     @keyframes pulse { 0%,100% { box-shadow:0 0 0 5px rgba(69,200,170,.12); } 50% { box-shadow:0 0 0 9px rgba(69,200,170,.02); } }
     @media (max-width:820px) { .frame { grid-template-columns:1fr; } .rail { position:static; height:auto; padding:25px 28px; } .intro { margin:36px 0 25px; } .intro h1 { max-width:none; font-size:29px; } .steps { grid-template-columns:repeat(4,1fr); gap:10px; } .steps li { gap:7px; font-size:12px; } .rail-foot { margin-top:25px; } main { padding:34px 22px 55px; } }
-    @media (max-width:620px) { .grid { grid-template-columns:1fr; } .span-2 { grid-column:auto; } .steps { grid-template-columns:repeat(2,1fr); } .topline,.service-console-head { align-items:start; flex-direction:column; } .service-state { justify-content:flex-start; min-width:0; } .service-state-copy { text-align:left; } .service-controls button { flex:1 1 calc(50% - 9px); } .service-controls button.danger { margin-left:0; } .confirm-bar { align-items:flex-start; flex-direction:column; } section { padding:22px 18px; } .footer-actions { align-items:flex-start; flex-direction:column; } .save-side { width:100%; flex-wrap:wrap; } }
+    @media (max-width:620px) { .grid { grid-template-columns:1fr; } .span-2 { grid-column:auto; } .steps { grid-template-columns:repeat(2,1fr); } .topline,.service-console-head { align-items:start; flex-direction:column; } .update-notice { grid-template-columns:38px 1fr; align-items:start; } .update-actions { grid-column:1 / -1; justify-content:flex-start; } .service-state { justify-content:flex-start; min-width:0; } .service-state-copy { text-align:left; } .service-controls button { flex:1 1 calc(50% - 9px); } .service-controls button.danger { margin-left:0; } .confirm-bar { align-items:flex-start; flex-direction:column; } section { padding:22px 18px; } .footer-actions { align-items:flex-start; flex-direction:column; } .save-side { width:100%; flex-wrap:wrap; } }
     @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.01ms!important; animation-iteration-count:1!important; transition-duration:.01ms!important; } }
   </style>
 </head>
@@ -106,10 +118,15 @@ const pageHTML = `<!doctype html>
       <div class="brand"><span class="mark">I</span><span>Infact HikBridge</span></div>
       <div class="intro"><div class="eyebrow">Local service manager</div><h1>Configure and control HikBridge.</h1><p>Manage one attendance terminal and its Windows service from this PC.</p></div>
       <ol class="steps"><li class="active">Status</li><li class="active">Device</li><li class="active">Cloud</li><li class="active">Schedule</li></ol>
-      <div class="rail-foot">Version {{.Version}} - Bound to this PC only</div>
+      <div class="rail-foot"><span>Version {{.Version}} - Bound to this PC only</span><button class="update-check" id="update-check" type="button">Check for updates</button><span id="update-status" aria-live="polite"></span></div>
     </aside>
     <main>
       <div class="topline"><div><div class="eyebrow">Control center</div><h2>Bridge service &amp; configuration</h2></div><div class="local">127.0.0.1 secure local session</div></div>
+      <div class="update-notice" id="update-notice" role="status" hidden>
+        <div class="update-symbol" aria-hidden="true">&#8593;</div>
+        <div class="update-copy"><h3 id="update-title">A HikBridge update is available</h3><p id="update-copy">Download the latest signed installer. Your configuration and queued attendance events will be preserved.</p></div>
+        <div class="update-actions"><a class="update-link" id="update-download" target="_blank" rel="noopener noreferrer">Download update</a><a class="update-link secondary" id="update-notes" target="_blank" rel="noopener noreferrer" hidden>Release notes</a><button class="update-dismiss" id="update-dismiss" type="button" aria-label="Dismiss update message">Later</button></div>
+      </div>
       <div class="notice">Stored passwords and bridge credentials are never sent back to this page. Leave a secret field blank to keep its current value.</div>
       <div class="service-console state-unavailable" id="service-console">
         <div class="service-console-head">
@@ -149,7 +166,7 @@ const pageHTML = `<!doctype html>
             <label>Bridge credential<input id="bridge-credential" type="password" autocomplete="new-password" placeholder="Paste the one-time credential"></label>
             <label class="check span-2"><input id="cloud-enabled" type="checkbox" checked>Enable cloud synchronization</label>
           </div>
-          <details><summary>Advanced cloud options</summary><div class="grid"><label class="span-2">Cloud ingestion endpoint<input id="ingest-url" type="url" placeholder="https://region-project.cloudfunctions.net/hikbridgeV1Events"></label><label class="check span-2"><input id="realtime-enabled" type="checkbox">Use realtime command delivery</label><label class="span-2">Realtime session endpoint<input id="realtime-session-url" type="url" placeholder="https://region-project.cloudfunctions.net/hikbridgeV1Session"></label></div></details>
+          <details><summary>Cloud delivery options</summary><div class="grid"><label class="check span-2"><input id="realtime-enabled" type="checkbox">Use realtime command delivery</label></div><div class="notice">Cloud routing is managed automatically by this HikBridge release. No endpoint configuration is required.</div></details>
           <div class="actions"><button id="test-cloud" type="button">Test cloud</button><div id="cloud-result" class="result" aria-live="polite">The test verifies the installation code and credential.</div></div>
         </section>
 
@@ -188,9 +205,7 @@ const pageHTML = `<!doctype html>
           enabled: byId("cloud-enabled").checked,
           installationCode: byId("installation-code").value.trim(),
           bridgeCredential: byId("bridge-credential").value,
-          ingestUrl: byId("ingest-url").value.trim(),
-          realtimeEnabled: byId("realtime-enabled").checked,
-          realtimeSessionUrl: byId("realtime-session-url").value.trim()
+          realtimeEnabled: byId("realtime-enabled").checked
         },
         service: { pollIntervalSeconds: Number(byId("poll").value) }
       };
@@ -217,6 +232,58 @@ const pageHTML = `<!doctype html>
     const serviceButtons = ["service-install", "service-start", "service-stop", "service-restart", "service-uninstall"];
     let currentService = null;
     let serviceActionBusy = false;
+    let updateCheckBusy = false;
+
+    function externalHTTPS(value) {
+      const parsed = new URL(value);
+      if (parsed.protocol !== "https:") throw new Error("The update link is not secure.");
+      return parsed.toString();
+    }
+
+    function renderUpdate(update) {
+      const notice = byId("update-notice");
+      if (!update.configured) {
+        byId("update-status").textContent = "Update channel is not configured in this build.";
+        notice.hidden = true;
+        return;
+      }
+      if (!update.updateAvailable) {
+        byId("update-status").textContent = "HikBridge is up to date.";
+        notice.hidden = true;
+        return;
+      }
+      const download = byId("update-download");
+      download.href = externalHTTPS(update.downloadUrl);
+      download.textContent = "Download " + update.latestVersion;
+      const notes = byId("update-notes");
+      if (update.releaseNotesUrl) {
+        notes.href = externalHTTPS(update.releaseNotesUrl);
+        notes.hidden = false;
+      } else {
+        notes.removeAttribute("href");
+        notes.hidden = true;
+      }
+      byId("update-title").textContent = "HikBridge " + update.latestVersion + " is available";
+      byId("update-copy").textContent = "This PC has " + update.currentVersion + ". Run the signed installer to update; configuration and queued attendance events will be preserved.";
+      byId("update-status").textContent = "Version " + update.latestVersion + " is available.";
+      notice.hidden = false;
+    }
+
+    async function checkForUpdates() {
+      if (updateCheckBusy) return;
+      updateCheckBusy = true;
+      const button = byId("update-check");
+      button.disabled = true;
+      byId("update-status").textContent = "Checking...";
+      try {
+        renderUpdate(await api("/api/update"));
+      } catch (error) {
+        byId("update-status").textContent = error.message;
+      } finally {
+        updateCheckBusy = false;
+        button.disabled = false;
+      }
+    }
 
     function serviceMessage(message, kind) {
       const node = byId("service-message");
@@ -299,9 +366,7 @@ const pageHTML = `<!doctype html>
         byId("timezone").value = state.timeZone;
         byId("installation-code").value = state.installationCode;
         byId("cloud-enabled").checked = state.cloudEnabled || !state.configured;
-        byId("ingest-url").value = state.ingestUrl;
         byId("realtime-enabled").checked = state.realtimeEnabled;
-        byId("realtime-session-url").value = state.realtimeSessionUrl;
         byId("poll").value = String(state.pollIntervalSeconds);
         if (state.hasDevicePassword) byId("password").placeholder = "Stored securely — leave blank to keep";
         if (state.hasBridgeCredential) byId("bridge-credential").placeholder = "Stored securely — leave blank to keep";
@@ -318,6 +383,8 @@ const pageHTML = `<!doctype html>
     byId("service-uninstall").addEventListener("click", () => { byId("uninstall-confirm").hidden = false; });
     byId("uninstall-cancel").addEventListener("click", () => { byId("uninstall-confirm").hidden = true; });
     byId("uninstall-confirm-button").addEventListener("click", () => runServiceAction("uninstall", byId("uninstall-confirm-button"), "Removing"));
+    byId("update-check").addEventListener("click", checkForUpdates);
+    byId("update-dismiss").addEventListener("click", () => { byId("update-notice").hidden = true; });
 
     byId("test-device").addEventListener("click", async () => {
       const button = byId("test-device"); busy(button, true, "Testing…"); setResult("device-result", "Connecting to the terminal…", "");
@@ -359,6 +426,7 @@ const pageHTML = `<!doctype html>
 
     load();
     refreshService(false);
+    checkForUpdates();
     window.setInterval(() => {
       if (document.visibilityState === "visible" && !serviceActionBusy) refreshService(true);
     }, 3000);

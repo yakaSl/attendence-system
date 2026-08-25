@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
 import { getApp } from "firebase-admin/app";
-import { Timestamp, type Firestore } from "firebase-admin/firestore";
+import { Timestamp, type Firestore, type Query } from "firebase-admin/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { z } from "zod";
 
@@ -22,9 +22,11 @@ const provisionSchema = z.object({
   description: z.string().trim().max(500).optional(),
 }).strict();
 
-const deviceActionSchema = z.object({
+export const deviceActionSchema = z.object({
   deviceId: z.string().regex(deviceIdPattern),
 }).strict();
+
+export const removeDeviceSchema = deviceActionSchema;
 
 const enabledSchema = deviceActionSchema.extend({ enabled: z.boolean() }).strict();
 
@@ -38,6 +40,7 @@ interface SecretManagerLike {
     parent: string;
     payload: { data: Buffer };
   }): Promise<[{ name?: string | null }, ...unknown[]]>;
+  deleteSecret(request: { name: string }): Promise<unknown>;
 }
 
 function projectId(): string {
@@ -55,6 +58,23 @@ function secretId(deviceId: string): string {
 
 function isAlreadyExists(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === 6;
+}
+
+function isNotFound(error: unknown): boolean {
+  if (typeof error !== "object" || error === null || !("code" in error)) return false;
+  return error.code === 5 || error.code === "5" || error.code === "NOT_FOUND";
+}
+
+async function deleteQueryDocuments(db: Firestore, query: Query): Promise<number> {
+  let deleted = 0;
+  while (true) {
+    const snapshot = await query.limit(200).get();
+    if (snapshot.empty) return deleted;
+    const batch = db.batch();
+    for (const document of snapshot.docs) batch.delete(document.ref);
+    await batch.commit();
+    deleted += snapshot.size;
+  }
 }
 
 export class DeviceProvisioningService {
@@ -255,6 +275,105 @@ export class DeviceProvisioningService {
     await batch.commit();
     return { deviceId: parsed.data.deviceId, enabled: parsed.data.enabled };
   }
+
+  async remove(raw: unknown, authContext: AuthContext): Promise<{
+    deviceId: string;
+    organizationId: string;
+    removed: true;
+    deletedBindings: number;
+  }> {
+    const parsed = removeDeviceSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new HttpsError("invalid-argument", "Device ID is invalid");
+    }
+    const deviceId = parsed.data.deviceId;
+    const registry = this.db.collection("bridgeDeviceRegistry").doc(deviceId);
+    const registrySnapshot = await registry.get();
+    if (!registrySnapshot.exists) {
+      throw new HttpsError("not-found", "Device registration does not exist");
+    }
+    const organizationId = registrySnapshot.get("organizationId");
+    const deviceDocumentPath = registrySnapshot.get("deviceDocumentPath");
+    if (typeof organizationId !== "string" || organizationId.length === 0 ||
+        deviceDocumentPath !== `organizations/${organizationId}/devices/${deviceId}`) {
+      throw new HttpsError("failed-precondition", "Device registration is incomplete");
+    }
+    await requireOrganizationRole(this.db, authContext, organizationId, ["organizationOwner", "hrAdmin"]);
+
+    const organization = this.db.collection("organizations").doc(organizationId);
+    const device = this.db.doc(deviceDocumentPath);
+    const now = Timestamp.now();
+    let deviceName = deviceId;
+    let branchId: string | null = null;
+    let secretResourceName: string | null = null;
+
+    // Revoke the bridge before deleting any supporting records. This leaves a
+    // safe, retryable state if a later external cleanup step fails.
+    await this.db.runTransaction(async (transaction) => {
+      const [latestRegistry, deviceSnapshot] = await transaction.getAll(registry, device);
+      if (latestRegistry === undefined || !latestRegistry.exists ||
+          latestRegistry.get("organizationId") !== organizationId ||
+          latestRegistry.get("deviceDocumentPath") !== device.path) {
+        throw new HttpsError("failed-precondition", "Device registration changed during removal");
+      }
+      const storedName = deviceSnapshot?.get("name");
+      const storedBranchId = latestRegistry.get("branchId");
+      const storedSecretResourceName = latestRegistry.get("secretResourceName");
+      if (typeof storedName === "string" && storedName.length > 0) deviceName = storedName;
+      if (typeof storedBranchId === "string" && storedBranchId.length > 0) branchId = storedBranchId;
+      if (typeof storedSecretResourceName === "string" && storedSecretResourceName.length > 0) {
+        secretResourceName = storedSecretResourceName;
+      }
+      transaction.update(registry, {
+        state: "deleting",
+        enabled: false,
+        deletionRequestedAt: now,
+        deletionRequestedBy: authContext.uid,
+      });
+      transaction.set(device, {
+        enabled: false,
+        connectionStatus: "disabled",
+        deletionRequestedAt: now,
+        updatedAt: now,
+      }, { merge: true });
+    });
+
+    if (secretResourceName !== null) {
+      try {
+        await this.secrets.deleteSecret({ name: secretResourceName });
+      } catch (error) {
+        if (!isNotFound(error)) throw error;
+      }
+    }
+
+    const deletedBindings = (await Promise.all([
+      deleteQueryDocuments(this.db, organization.collection("deviceIdentities").where("deviceId", "==", deviceId)),
+      deleteQueryDocuments(this.db, organization.collection("unmappedIdentities").where("deviceId", "==", deviceId)),
+      deleteQueryDocuments(this.db, organization.collection("deviceEnrollments").where("deviceId", "==", deviceId)),
+      deleteQueryDocuments(this.db, this.db.collection("_bridgeReplay").where("deviceId", "==", deviceId)),
+    ])).reduce((total, count) => total + count, 0);
+
+    // recursiveDelete removes the device document and every command/lock
+    // subcollection, including subcollections introduced by future features.
+    await this.db.recursiveDelete(device);
+
+    const audit = organization.collection("deviceDeletionAudits").doc();
+    const finalBatch = this.db.batch();
+    finalBatch.delete(registry);
+    finalBatch.create(audit, {
+      action: "device_removed",
+      deviceId,
+      deviceName,
+      branchId,
+      deletedBindings,
+      historicalAttendancePreserved: true,
+      actorId: authContext.uid,
+      createdAt: Timestamp.now(),
+    });
+    await finalBatch.commit();
+
+    return { deviceId, organizationId, removed: true, deletedBindings };
+  }
 }
 
 const provisioningService = new DeviceProvisioningService(firestore, new SecretManagerServiceClient());
@@ -280,4 +399,9 @@ export const rotateDeviceCredential = onCall({ region }, async (request) => {
 export const setDeviceEnabled = onCall({ region }, async (request) => {
   const auth = requireAuthentication(request.auth as AuthContext | undefined);
   return provisioningService.setEnabled(request.data, auth);
+});
+
+export const removeDevice = onCall({ region, timeoutSeconds: 120 }, async (request) => {
+  const auth = requireAuthentication(request.auth as AuthContext | undefined);
+  return provisioningService.remove(request.data, auth);
 });

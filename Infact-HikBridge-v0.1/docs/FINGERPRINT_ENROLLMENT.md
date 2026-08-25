@@ -6,6 +6,8 @@ An organization owner or HR administrator creates the employee in the cloud and 
 
 The biometric template never enters Firestore or the dashboard. The cloud retains only enrollment state, finger slot, terminal-reported quality, timestamps, and a bounded error message.
 
+Duplicate installation codes for the same physical terminal can merge their cloud employee mappings and enrollment metadata into one retained registration. This operation does not read, copy, or upload fingerprint templates; those remain on the terminal. The source registration is preserved until an administrator separately removes it.
+
 ## One-time deployment
 
 Deploy the updated ingestion endpoint, employee callables, and Firestore Rules from the Firebase project directory:
@@ -35,7 +37,9 @@ go run .\cmd\hikbridge run --config .\local\config.json
 For a customer installation, build and install the versioned installer instead:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\installer\build-installer.ps1 -Version 0.1.0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\installer\build-installer.ps1 `
+  -Version 0.1.0 `
+  -UpdateManifestURL https://YOUR_BACKEND.hosted.app/downloads/hikbridge/update
 ```
 
 ## Preconditions

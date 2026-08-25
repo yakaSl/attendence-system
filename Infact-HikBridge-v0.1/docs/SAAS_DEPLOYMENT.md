@@ -75,10 +75,22 @@ Replace `SAAS_PUBLIC_URL` with the final `hosted.app` or custom-domain URL and r
 Code-sign the versioned Windows installer, publish it to an HTTPS location, and configure the App Hosting runtime variable below:
 
 ```dotenv
+HIKBRIDGE_LATEST_VERSION=0.1.2
 HIKBRIDGE_INSTALLER_URL=https://downloads.example.com/Infact-HikBridge-Setup-0.1.2.exe
+HIKBRIDGE_RELEASE_NOTES_URL=https://YOUR_BACKEND.hosted.app/releases/hikbridge-0.1.2
 ```
 
-The Devices page links to the stable SaaS path `/downloads/hikbridge`; that route validates the configured HTTPS location and redirects to the current signed release. Update only the runtime variable when publishing a new version. If the variable is missing or invalid, the route fails closed instead of distributing an unsigned or insecure artifact.
+The Devices page links to the stable SaaS path `/downloads/hikbridge`; that route validates the configured HTTPS location and redirects to the current signed release. The public `/downloads/hikbridge/update` manifest exposes the configured semantic version and stable download path to installed HikBridge applications. `HIKBRIDGE_RELEASE_NOTES_URL` is optional, but when present it must use HTTPS.
+
+When publishing a release, upload and code-sign the installer first, then update `HIKBRIDGE_LATEST_VERSION` and `HIKBRIDGE_INSTALLER_URL` together. Build every customer installer with the production manifest URL pinned into the executable:
+
+```powershell
+.\installer\build-installer.ps1 `
+  -Version 0.1.2 `
+  -UpdateManifestURL https://YOUR_BACKEND.hosted.app/downloads/hikbridge/update
+```
+
+If the release version or installer URL is missing or invalid, both download and update discovery fail closed instead of distributing an insecure artifact.
 
 ## 5. First platform administrator
 

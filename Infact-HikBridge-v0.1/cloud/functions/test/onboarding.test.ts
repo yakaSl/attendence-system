@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { createBranchSchema, deleteBranchSchema } from "../src/branches/management.js";
 import { createDepartmentSchema } from "../src/departments/management.js";
+import { mergeDeviceEnrollmentDataSchema } from "../src/devices/migration.js";
+import { removeDeviceSchema } from "../src/devices/provisioning.js";
 import {
   createEmployeeSchema,
   requestFingerprintEnrollmentSchema,
@@ -83,6 +85,34 @@ describe("branch creation input", () => {
       organizationId: "northwind-labs",
       departmentId: "../finance",
       name: "Finance",
+    }).success).toBe(false);
+  });
+});
+
+describe("device removal input", () => {
+  it("accepts a safe bridge device identifier and rejects extra fields", () => {
+    expect(removeDeviceSchema.parse({ deviceId: "office-main-01" })).toEqual({ deviceId: "office-main-01" });
+    expect(removeDeviceSchema.safeParse({ deviceId: "../office-main-01" }).success).toBe(false);
+    expect(removeDeviceSchema.safeParse({ deviceId: "office-main-01", organizationId: "another-org" }).success).toBe(false);
+  });
+});
+
+describe("duplicate device merge input", () => {
+  it("requires different devices and explicit same-terminal confirmation", () => {
+    expect(mergeDeviceEnrollmentDataSchema.parse({
+      sourceDeviceId: "duplicate-main-01",
+      targetDeviceId: "office-main-01",
+      confirmedSamePhysicalDevice: true,
+    })).toMatchObject({ targetDeviceId: "office-main-01" });
+    expect(mergeDeviceEnrollmentDataSchema.safeParse({
+      sourceDeviceId: "office-main-01",
+      targetDeviceId: "office-main-01",
+      confirmedSamePhysicalDevice: true,
+    }).success).toBe(false);
+    expect(mergeDeviceEnrollmentDataSchema.safeParse({
+      sourceDeviceId: "duplicate-main-01",
+      targetDeviceId: "office-main-01",
+      confirmedSamePhysicalDevice: false,
     }).success).toBe(false);
   });
 });

@@ -16,7 +16,7 @@ The customer PC does not need Go, Git, Node.js, or an editor.
 2. Run the installer as an administrator and keep the default install location unless local policy requires another location.
 3. Leave **Configure the Hikvision device and cloud registration** selected on the final page.
 4. In the local management window opened on `127.0.0.1`, enter the terminal network details and select **Test device**.
-5. Enter the one-time installation code, bridge credential, and cloud ingestion endpoint. Select **Test cloud**.
+5. Enter the one-time installation code and bridge credential. The versioned HikBridge release supplies the Infact Pulse cloud endpoints automatically. Select **Test cloud**.
 6. Select **Save & start service**. The service panel should report **Running** and show its Windows process ID.
 7. Open `http://127.0.0.1:8765/status` on the same PC and confirm device connectivity and queue counts.
 
@@ -35,6 +35,8 @@ C:\Program Files\Infact\HikBridge
 ## Reconfiguration and upgrades
 
 Use **Start > Infact HikBridge > Manage HikBridge**. Windows requests administrator approval. The management GUI shows live service status and provides **Install service**, **Start**, **Stop**, **Restart**, and **Uninstall service** actions. Service removal retains configuration, logs, and queued event evidence. Stored device and cloud secrets are not returned to the browser; leave a secret field blank to keep it. Saving restarts the service when required.
+
+The management GUI checks the vendor HTTPS release manifest when it opens. When a newer semantic version is published, it shows the installed and latest versions with a link to the signed installer. The check is notification-only: HikBridge never downloads or executes an installer silently.
 
 An upgrade stops the existing service, replaces application files, and starts it again. Existing configuration and queued event evidence remain in ProgramData.
 
@@ -59,7 +61,9 @@ Use Windows **Installed apps** or the Start menu uninstall shortcut. Uninstall r
 Maintainers need Go and Inno Setup 6:
 
 ```powershell
-.\installer\build-installer.ps1 -Version 0.1.0
+.\installer\build-installer.ps1 `
+  -Version 0.1.0 `
+  -UpdateManifestURL https://YOUR_BACKEND.hosted.app/downloads/hikbridge/update
 ```
 
-The version is embedded into `hikbridge.exe` and the installer metadata. The output is created in `dist\installer`. Never add a customer password or bridge credential to the installer sources.
+The version and HTTPS update manifest URL are embedded into `hikbridge.exe`; the version is also written to installer metadata. The output is created in `dist\installer`. Never add a customer password or bridge credential to the installer sources.

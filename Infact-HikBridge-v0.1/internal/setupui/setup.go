@@ -23,6 +23,7 @@ import (
 	"infactsolutions/hikbridge/internal/config"
 	"infactsolutions/hikbridge/internal/hikvision"
 	"infactsolutions/hikbridge/internal/syncer"
+	"infactsolutions/hikbridge/internal/updater"
 	"infactsolutions/hikbridge/internal/winservice"
 )
 
@@ -30,6 +31,9 @@ type Options struct {
 	ConfigPath         string
 	ListenAddress      string
 	Version            string
+	UpdateManifestURL  string
+	CloudIngestURL     string
+	RealtimeSessionURL string
 	OpenBrowser        bool
 	ManageService      bool
 	ServiceName        string
@@ -48,12 +52,10 @@ type deviceForm struct {
 }
 
 type cloudForm struct {
-	Enabled            bool   `json:"enabled"`
-	InstallationCode   string `json:"installationCode"`
-	BridgeCredential   string `json:"bridgeCredential"`
-	IngestURL          string `json:"ingestUrl"`
-	RealtimeEnabled    bool   `json:"realtimeEnabled"`
-	RealtimeSessionURL string `json:"realtimeSessionUrl"`
+	Enabled          bool   `json:"enabled"`
+	InstallationCode string `json:"installationCode"`
+	BridgeCredential string `json:"bridgeCredential"`
+	RealtimeEnabled  bool   `json:"realtimeEnabled"`
 }
 
 type serviceForm struct {
@@ -79,9 +81,7 @@ type publicState struct {
 	CloudEnabled        bool   `json:"cloudEnabled"`
 	InstallationCode    string `json:"installationCode"`
 	HasBridgeCredential bool   `json:"hasBridgeCredential"`
-	IngestURL           string `json:"ingestUrl"`
 	RealtimeEnabled     bool   `json:"realtimeEnabled"`
-	RealtimeSessionURL  string `json:"realtimeSessionUrl"`
 	PollIntervalSeconds int    `json:"pollIntervalSeconds"`
 }
 
@@ -89,6 +89,7 @@ type application struct {
 	options      Options
 	existing     *config.Config
 	services     serviceController
+	updates      updateChecker
 	launchToken  string
 	sessionToken string
 	csrfToken    string
@@ -140,16 +141,31 @@ func Run(ctx context.Context, options Options) error {
 		return fmt.Errorf("create setup CSP nonce: %w", err)
 	}
 	var existing *config.Config
-	if loaded, loadErr := config.Load(options.ConfigPath); loadErr == nil {
+	if loaded, loadErr := config.LoadWithCloudEndpoints(options.ConfigPath, config.CloudEndpoints{
+		IngestURL:          options.CloudIngestURL,
+		RealtimeSessionURL: options.RealtimeSessionURL,
+	}); loadErr == nil {
 		existing = loaded
 	} else if !errors.Is(loadErr, os.ErrNotExist) {
 		return fmt.Errorf("load existing configuration: %w", loadErr)
 	}
 	actualAddress := listener.Addr().String()
+	var updates updateChecker
+	if strings.TrimSpace(options.UpdateManifestURL) != "" {
+		updates, err = updater.New(updater.Options{
+			ManifestURL:    options.UpdateManifestURL,
+			CurrentVersion: options.Version,
+			Timeout:        10 * time.Second,
+		})
+		if err != nil {
+			return fmt.Errorf("configure update checker: %w", err)
+		}
+	}
 	app := &application{
 		options:      options,
 		existing:     existing,
 		services:     nativeServiceController{},
+		updates:      updates,
 		launchToken:  launchToken,
 		sessionToken: sessionToken,
 		csrfToken:    csrfToken,
@@ -199,6 +215,7 @@ func (app *application) routes() http.Handler {
 	mux.HandleFunc("/api/state", app.handleState)
 	mux.HandleFunc("/api/service", app.handleServiceStatus)
 	mux.HandleFunc("/api/service-action", app.handleServiceAction)
+	mux.HandleFunc("/api/update", app.handleUpdate)
 	mux.HandleFunc("/api/test-device", app.handleTestDevice)
 	mux.HandleFunc("/api/test-cloud", app.handleTestCloud)
 	mux.HandleFunc("/api/save", app.handleSave)
@@ -315,9 +332,7 @@ func (app *application) state() publicState {
 	state.CloudEnabled = cfg.Cloud.Enabled
 	state.InstallationCode = cfg.Hikvision.DeviceID
 	state.HasBridgeCredential = cfg.Cloud.BridgeKey != ""
-	state.IngestURL = cfg.Cloud.IngestURL
 	state.RealtimeEnabled = cfg.Cloud.RealtimeEnabled
-	state.RealtimeSessionURL = cfg.Cloud.RealtimeSessionURL
 	state.PollIntervalSeconds = cfg.Service.PollIntervalSeconds
 	return state
 }
@@ -380,10 +395,10 @@ func (app *application) buildConfig(form setupForm) (*config.Config, error) {
 		},
 		Cloud: config.CloudConfig{
 			Enabled:            form.Cloud.Enabled,
-			IngestURL:          strings.TrimSpace(form.Cloud.IngestURL),
+			IngestURL:          strings.TrimSpace(app.options.CloudIngestURL),
 			BridgeKey:          bridgeCredential,
 			RealtimeEnabled:    form.Cloud.RealtimeEnabled,
-			RealtimeSessionURL: strings.TrimSpace(form.Cloud.RealtimeSessionURL),
+			RealtimeSessionURL: strings.TrimSpace(app.options.RealtimeSessionURL),
 		},
 	}
 	if existing != nil {

@@ -24,10 +24,10 @@
   },
   "cloud": {
     "enabled": false,
-    "ingestUrl": "https://YOUR_REGION-YOUR_PROJECT.cloudfunctions.net/hikbridgeV1Events",
+    "ingestUrl": "https://asia-south1-infact-attendance-128ee.cloudfunctions.net/hikbridgeV1Events",
     "bridgeKey": "CHANGE_ME_TO_A_LONG_RANDOM_PER_DEVICE_SECRET",
     "realtimeEnabled": false,
-    "realtimeSessionUrl": "https://YOUR_REGION-YOUR_PROJECT.cloudfunctions.net/hikbridgeV1Session",
+    "realtimeSessionUrl": "https://asia-south1-infact-attendance-128ee.cloudfunctions.net/hikbridgeV1Session",
     "batchSize": 100,
     "requestTimeoutSeconds": 15,
     "allowInsecureHttp": false

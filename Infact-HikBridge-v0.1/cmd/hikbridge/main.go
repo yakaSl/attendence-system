@@ -33,6 +33,9 @@ const (
 )
 
 var version = "dev"
+var updateManifestURL = ""
+var cloudIngestURL = "https://asia-south1-infact-attendance-128ee.cloudfunctions.net/hikbridgeV1Events"
+var cloudRealtimeSessionURL = "https://asia-south1-infact-attendance-128ee.cloudfunctions.net/hikbridgeV1Session"
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `Infact HikBridge %s
@@ -79,7 +82,10 @@ func serviceConfigPath(args []string) (string, error) {
 }
 
 func loadConfig(path string) (*config.Config, error) {
-	cfg, err := config.Load(path)
+	cfg, err := config.LoadWithCloudEndpoints(path, config.CloudEndpoints{
+		IngestURL:          cloudIngestURL,
+		RealtimeSessionURL: cloudRealtimeSessionURL,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("load config %s: %w", path, err)
 	}
@@ -393,6 +399,9 @@ func runSetup(args []string) error {
 		ConfigPath:         *configPath,
 		ListenAddress:      *listenAddress,
 		Version:            version,
+		UpdateManifestURL:  updateManifestURL,
+		CloudIngestURL:     cloudIngestURL,
+		RealtimeSessionURL: cloudRealtimeSessionURL,
 		OpenBrowser:        !*noOpen,
 		ManageService:      manageService,
 		ServiceName:        serviceName,

@@ -127,6 +127,47 @@ export function setDeviceEnabled(data: { deviceId: string; enabled: boolean }) {
   return call<typeof data, { deviceId: string; enabled: boolean }>("setDeviceEnabled", data);
 }
 
+export function removeDevice(data: { deviceId: string }) {
+  if (isDemoMode()) {
+    return Promise.resolve({ deviceId: data.deviceId, organizationId: "demo", removed: true as const, deletedBindings: 0 });
+  }
+  return call<typeof data, {
+    deviceId: string;
+    organizationId: string;
+    removed: true;
+    deletedBindings: number;
+  }>("removeDevice", data);
+}
+
+export interface MergeDeviceEnrollmentDataResult {
+  sourceDeviceId: string;
+  targetDeviceId: string;
+  organizationId: string;
+  mappedIdentities: number;
+  enrollmentRecords: number;
+  resolvedUnmappedIdentities: number;
+  serialVerified: boolean;
+}
+
+export function mergeDeviceEnrollmentData(data: {
+  sourceDeviceId: string;
+  targetDeviceId: string;
+  confirmedSamePhysicalDevice: true;
+}) {
+  if (isDemoMode()) {
+    return Promise.resolve({
+      sourceDeviceId: data.sourceDeviceId,
+      targetDeviceId: data.targetDeviceId,
+      organizationId: "demo",
+      mappedIdentities: 3,
+      enrollmentRecords: 3,
+      resolvedUnmappedIdentities: 0,
+      serialVerified: true,
+    } satisfies MergeDeviceEnrollmentDataResult);
+  }
+  return call<typeof data, MergeDeviceEnrollmentDataResult>("mergeDeviceEnrollmentData", data);
+}
+
 export function createSubscriptionCheckout(data: {
   organizationId: string;
   planId: PlanId;

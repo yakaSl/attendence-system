@@ -61,16 +61,20 @@ The verification script targets only `cmd/` and `internal/` Go packages so neste
 Build the versioned Windows bridge:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1 -Version 0.1.0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1 `
+  -Version 0.1.0 `
+  -UpdateManifestURL https://YOUR_BACKEND.hosted.app/downloads/hikbridge/update
 ```
 
 Build the customer installer:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\installer\build-installer.ps1 -Version 0.1.0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\installer\build-installer.ps1 `
+  -Version 0.1.0 `
+  -UpdateManifestURL https://YOUR_BACKEND.hosted.app/downloads/hikbridge/update
 ```
 
-Output is written to `dist/`, including `dist\installer\Infact-HikBridge-Setup-0.1.0.exe`. Release artifacts must be code-signed outside this repository before distribution.
+Output is written to `dist/`, including `dist\installer\Infact-HikBridge-Setup-0.1.0.exe`. The HTTPS update manifest URL is pinned into customer builds. Release artifacts must be code-signed outside this repository before distribution.
 
 ## Windows installation
 
@@ -126,7 +130,9 @@ Deployment is intentionally not performed by repository tests. Complete the stag
 The standard gate covers Go format/tests/vet, Cloud lint/types/unit tests/build, dashboard lint/types/tests/build, and optionally Firestore Rules/repository emulator tests and installer compilation.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1 -Full -BuildInstaller -Version 0.1.0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1 `
+  -Full -BuildInstaller -Version 0.1.0 `
+  -UpdateManifestURL https://YOUR_BACKEND.hosted.app/downloads/hikbridge/update
 ```
 
 Automated coverage includes Digest authentication, Hikvision fixture pagination, malformed-response preservation, queue crash recovery, cloud failure/recovery, HMAC contract vectors shared with TypeScript, duplicate/replay handling, status heartbeat, Firestore tenant Rules, immutable recalculation, overnight shifts, corrections, reports, and setup-session security. Physical terminal and clean Windows VM cases remain manual release gates in [End-to-end test plan](docs/END_TO_END_TEST_PLAN.md).

@@ -45,7 +45,7 @@ These numbers are workload estimates, not a guarantee that a project remains ins
    ```
 
 3. Deploy `database.rules.json` and the Functions that create sessions and employee commands.
-4. Set `cloud.realtimeEnabled` to `true` and `cloud.realtimeSessionUrl` to the deployed `hikbridgeV1Session` HTTPS URL in each bridge configuration. The local setup UI exposes both fields under Advanced cloud options.
+4. Enable **Use realtime command delivery** in the local setup UI. Production ingestion and session endpoints are pinned into the versioned HikBridge release and are not entered by SaaS users. Controlled staging builds can override them at build time.
 5. Restart the bridge and verify `/status` reports `realtimeConnected: true` and a recent `lastRealtimeConnect`.
 
 The Firebase web API key identifies the Firebase project and is not the bridge credential. The session Function still requires the normal per-device HMAC signature before issuing a short-lived, device-scoped Firebase custom token.

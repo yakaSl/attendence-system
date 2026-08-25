@@ -24,7 +24,17 @@ Open **Manage HikBridge** from the Start menu and enter:
 
 Select **Test device**. A successful result includes model, serial, firmware, and user count. The test does not upload users or reveal the password.
 
-Next, paste the installation code and one-time bridge credential from the dashboard. Enter the HTTPS ingestion endpoint, test cloud connectivity, then save and start the service.
+Next, paste the installation code and one-time bridge credential from the dashboard. HikBridge supplies the versioned Infact Pulse cloud endpoints automatically. Test cloud connectivity, then save and start the service.
+
+## Merge duplicate registrations
+
+If two installation codes point to the same physical terminal, stop both bridge services and choose the registration to retain. In the retained row on the Infact Pulse **Devices** page, select **Merge duplicate device data**, choose the duplicate source, and confirm that both codes connect to the same physical terminal. The callable copies employee-number mappings and enrollment metadata to the retained registration, resolves matching unmapped identities, and records a merge audit. It blocks known serial-number mismatches and mapping conflicts. The source registration remains unchanged until it is deliberately removed.
+
+No fingerprint template is transferred: both registrations already refer to the same terminal where the biometric data remains. Start only the retained bridge, verify several punches, and then remove the duplicate registration.
+
+## Remove a bridge
+
+Stop the **Infact Hikvision Bridge** service on the client PC before permanent removal. In the Infact Pulse **Devices** view, select the remove action and type the exact device ID to confirm. Removal immediately revokes the bridge and deletes its Firestore device/registry data, nested commands, device identity and enrollment state, replay markers, and Secret Manager credential. Historical attendance and deletion-audit evidence are retained. To reconnect the terminal later, provision it again and install the newly issued credential.
 
 ## Confirm fingerprint events
 

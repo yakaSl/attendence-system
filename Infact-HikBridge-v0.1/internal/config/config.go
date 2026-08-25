@@ -60,6 +60,11 @@ type CloudConfig struct {
 	AllowInsecureHTTP     bool   `json:"allowInsecureHttp"`
 }
 
+type CloudEndpoints struct {
+	IngestURL          string
+	RealtimeSessionURL string
+}
+
 var deviceIDRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 func DefaultPath() string {
@@ -74,6 +79,13 @@ func DefaultPath() string {
 }
 
 func Load(path string) (*Config, error) {
+	return LoadWithCloudEndpoints(path, CloudEndpoints{})
+}
+
+// LoadWithCloudEndpoints applies release-pinned platform routing before
+// validation. This lets an upgraded bridge replace legacy customer-entered
+// endpoint values without requiring the local configuration to be edited.
+func LoadWithCloudEndpoints(path string, endpoints CloudEndpoints) (*Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -89,10 +101,20 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	config.applyDefaults()
+	config.ApplyCloudEndpoints(endpoints)
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 	return &config, nil
+}
+
+func (c *Config) ApplyCloudEndpoints(endpoints CloudEndpoints) {
+	if value := strings.TrimSpace(endpoints.IngestURL); value != "" {
+		c.Cloud.IngestURL = value
+	}
+	if value := strings.TrimSpace(endpoints.RealtimeSessionURL); value != "" {
+		c.Cloud.RealtimeSessionURL = value
+	}
 }
 
 // Save validates and atomically replaces a configuration file. The restrictive

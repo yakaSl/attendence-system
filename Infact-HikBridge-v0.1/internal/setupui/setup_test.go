@@ -1,6 +1,7 @@
 package setupui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,8 +11,18 @@ import (
 	"testing"
 
 	"infactsolutions/hikbridge/internal/config"
+	"infactsolutions/hikbridge/internal/updater"
 	"infactsolutions/hikbridge/internal/winservice"
 )
+
+type fakeUpdateChecker struct {
+	result updater.Result
+	err    error
+}
+
+func (fake fakeUpdateChecker) Check(context.Context) (updater.Result, error) {
+	return fake.result, fake.err
+}
 
 type fakeServiceController struct {
 	installed bool
@@ -63,6 +74,7 @@ func configuredApplication(t *testing.T) *application {
 	return &application{
 		options: Options{
 			ConfigPath: filepath.Join(t.TempDir(), "config.json"), Version: "0.1.0",
+			CloudIngestURL: "https://cloud.example.test/hikbridgeV1Events", RealtimeSessionURL: "https://cloud.example.test/hikbridgeV1Session",
 			ManageService: true, ServiceName: "InfactHikBridge", ServiceDisplay: "Infact Hikvision Bridge",
 		},
 		existing: &config.Config{
@@ -118,7 +130,7 @@ func TestBuildConfigKeepsOmittedStoredSecrets(t *testing.T) {
 	app := configuredApplication(t)
 	value, err := app.buildConfig(setupForm{
 		Device:  deviceForm{Address: "10.0.0.20", Port: 443, UseHTTPS: true, Username: "installer", DeviceName: "Reception", TimeZone: "Asia/Colombo"},
-		Cloud:   cloudForm{Enabled: true, InstallationCode: "reception-01", IngestURL: "https://example.test/hikbridgeV1Events"},
+		Cloud:   cloudForm{Enabled: true, InstallationCode: "reception-01", RealtimeEnabled: true},
 		Service: serviceForm{PollIntervalSeconds: 10},
 	})
 	if err != nil {
@@ -129,6 +141,9 @@ func TestBuildConfigKeepsOmittedStoredSecrets(t *testing.T) {
 	}
 	if value.Hikvision.BaseURL != "https://10.0.0.20:443" || value.Hikvision.DeviceID != "reception-01" {
 		t.Fatalf("unexpected configuration: %+v", value.Hikvision)
+	}
+	if value.Cloud.IngestURL != app.options.CloudIngestURL || value.Cloud.RealtimeSessionURL != app.options.RealtimeSessionURL {
+		t.Fatalf("release-managed cloud endpoints were not applied: %+v", value.Cloud)
 	}
 }
 
@@ -214,6 +229,45 @@ func TestSetupPageIncludesServiceControls(t *testing.T) {
 		`id="service-uninstall"`,
 		`api("/api/service-action"`,
 		`id="uninstall-confirm"`,
+	} {
+		if !strings.Contains(pageHTML, expected) {
+			t.Fatalf("setup page missing %s", expected)
+		}
+	}
+}
+
+func TestUpdateEndpointReturnsAvailableRelease(t *testing.T) {
+	app := configuredApplication(t)
+	app.updates = fakeUpdateChecker{result: updater.Result{
+		CurrentVersion:  "0.1.0",
+		LatestVersion:   "0.2.0",
+		UpdateAvailable: true,
+		DownloadURL:     "https://downloads.example.com/Infact-HikBridge-Setup-0.2.0.exe",
+	}}
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8766/api/update", nil)
+	request.RemoteAddr = "127.0.0.1:50000"
+	request.AddCookie(&http.Cookie{Name: "hikbridge_setup", Value: "session"})
+	response := httptest.NewRecorder()
+	app.routes().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var status publicUpdateStatus
+	if err := json.Unmarshal(response.Body.Bytes(), &status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.Configured || !status.UpdateAvailable || status.LatestVersion != "0.2.0" {
+		t.Fatalf("unexpected update status: %+v", status)
+	}
+}
+
+func TestSetupPageIncludesUpdateNotice(t *testing.T) {
+	for _, expected := range []string{
+		`id="update-notice"`,
+		`id="update-download"`,
+		`api("/api/update"`,
+		`checkForUpdates();`,
 	} {
 		if !strings.Contains(pageHTML, expected) {
 			t.Fatalf("setup page missing %s", expected)

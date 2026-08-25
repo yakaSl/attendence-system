@@ -1,6 +1,10 @@
 param(
     [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$')]
-    [string]$Version = '0.1.0'
+    [string]$Version = '0.1.0',
+    [Parameter(Mandatory = $true)]
+    [string]$UpdateManifestURL,
+    [string]$CloudIngestURL = 'https://asia-south1-infact-attendance-128ee.cloudfunctions.net/hikbridgeV1Events',
+    [string]$RealtimeSessionURL = 'https://asia-south1-infact-attendance-128ee.cloudfunctions.net/hikbridgeV1Session'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,7 +19,7 @@ if (-not $iscc) {
     throw 'Inno Setup 6 was not found. Install it, then rerun this script.'
 }
 
-& (Join-Path $repositoryRoot 'scripts\build.ps1') -Version $Version
+& (Join-Path $repositoryRoot 'scripts\build.ps1') -Version $Version -UpdateManifestURL $UpdateManifestURL -CloudIngestURL $CloudIngestURL -RealtimeSessionURL $RealtimeSessionURL
 if ($LASTEXITCODE -ne 0) { throw 'HikBridge executable build failed.' }
 
 $scriptPath = Join-Path $PSScriptRoot 'Infact-HikBridge.iss'

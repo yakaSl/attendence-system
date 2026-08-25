@@ -1,13 +1,13 @@
 "use client";
 
-import { Check, Copy, Download, KeyRound, MapPin, MonitorDown, Plus, Power, RotateCw, ShieldCheck, Wifi, WifiOff } from "lucide-react";
+import { Check, Copy, Download, GitMerge, KeyRound, MapPin, MonitorDown, Plus, Power, RotateCw, ShieldCheck, Trash2, Wifi, WifiOff } from "lucide-react";
 import { useCallback, useState, type FormEvent } from "react";
 
 import { Button, EmptyState, ErrorState, LoadingState, Modal, PageHeader, Panel, RoleGate, StatusBadge } from "@/components/ui";
 import { useAuth } from "@/lib/auth/auth-provider";
 import { useData } from "@/lib/data/data-provider";
 import type { Branch, Device } from "@/lib/data/types";
-import { createBranch, provisionDevice, rotateDeviceCredential, setDeviceEnabled } from "@/lib/firebase/actions";
+import { createBranch, mergeDeviceEnrollmentData, provisionDevice, removeDevice, rotateDeviceCredential, setDeviceEnabled, type MergeDeviceEnrollmentDataResult } from "@/lib/firebase/actions";
 import { relativeTime } from "@/lib/format";
 import { slugifyIdentifier } from "@/lib/onboarding";
 import { useAsyncData } from "@/lib/use-async-data";
@@ -29,6 +29,8 @@ export default function DevicesPage() {
   const [addingBranch, setAddingBranch] = useState(false);
   const [provisioning, setProvisioning] = useState(false);
   const [credential, setCredential] = useState<{ deviceId: string; bridgeKey: string; graceMinutes?: number } | null>(null);
+  const [mergingIntoDevice, setMergingIntoDevice] = useState<Device | null>(null);
+  const [removingDevice, setRemovingDevice] = useState<Device | null>(null);
   const [busyDevice, setBusyDevice] = useState<string | null>(null);
   const canManage = user !== null && ["organizationOwner", "hrAdmin", "platformAdmin"].includes(user.role);
 
@@ -81,7 +83,7 @@ export default function DevicesPage() {
             <div className="device-detail"><small>Bridge</small><strong>{device.bridgeVersion ?? "Unknown"}</strong></div>
             <div className="device-detail"><small>Pending local</small><strong>{device.pendingLocalEvents ?? "Not reported"}</strong></div>
             <StatusBadge status={device.connectionStatus} />
-            {canManage ? <div className="device-actions"><button className="icon-button" disabled={busyDevice === device.id} onClick={() => rotate(device)} aria-label={`Rotate ${device.name} credential`}><RotateCw size={14} /></button><button className="icon-button" disabled={busyDevice === device.id} onClick={() => toggle(device)} aria-label={`${device.connectionStatus === "disabled" ? "Enable" : "Disable"} ${device.name}`}><Power size={14} /></button></div> : null}
+            {canManage ? <div className="device-actions"><button className="icon-button" disabled={busyDevice === device.id} onClick={() => rotate(device)} aria-label={`Rotate ${device.name} credential`}><RotateCw size={14} /></button><button className="icon-button" disabled={busyDevice === device.id} onClick={() => toggle(device)} aria-label={`${device.connectionStatus === "disabled" ? "Enable" : "Disable"} ${device.name}`}><Power size={14} /></button>{(data?.devices.length ?? 0) > 1 ? <button className="icon-button" disabled={busyDevice === device.id} onClick={() => setMergingIntoDevice(device)} aria-label={`Merge duplicate enrollment data into ${device.name}`}><GitMerge size={14} /></button> : null}<button className="icon-button danger-icon" disabled={busyDevice === device.id} onClick={() => setRemovingDevice(device)} aria-label={`Remove ${device.name}`}><Trash2 size={14} /></button></div> : null}
           </article>)}</div>
         )}
       </Panel>
@@ -90,6 +92,8 @@ export default function DevicesPage() {
         <ProvisionModal open={provisioning} organizationId={user?.organizationId ?? ""} branches={branches} onClose={() => setProvisioning(false)} onProvisioned={(result) => { setProvisioning(false); setCredential(result); refresh(); }} />
       </RoleGate>
       <CredentialModal credential={credential} onClose={() => setCredential(null)} />
+      {mergingIntoDevice ? <MergeDeviceModal target={mergingIntoDevice} devices={data?.devices ?? []} onClose={() => setMergingIntoDevice(null)} /> : null}
+      {removingDevice ? <RemoveDeviceModal device={removingDevice} onClose={() => setRemovingDevice(null)} onRemoved={() => { setRemovingDevice(null); refresh(); }} /> : null}
     </>
   );
 }
@@ -136,4 +140,54 @@ function CredentialModal({ credential, onClose }: { credential: { deviceId: stri
   const [copied, setCopied] = useState(false);
   async function copy() { if (!credential) return; await navigator.clipboard.writeText(credential.bridgeKey); setCopied(true); }
   return <Modal open={credential !== null} title="Store this bridge credential now" description="It will not be available from the dashboard after this window closes." onClose={onClose}>{credential ? <div className="modal-content"><div className="credential-warning"><KeyRound size={18} /><span><strong>{credential.deviceId}</strong><small>{credential.graceMinutes ? `Previous credential remains valid for ${credential.graceMinutes} minutes.` : "New device registration."}</small></span></div><label className="credential-box"><span>Bridge key</span><code>{credential.bridgeKey}</code><button type="button" onClick={copy}>{copied ? <Check size={15} /> : <Copy size={15} />}{copied ? "Copied" : "Copy"}</button></label><ol className="credential-steps"><li>Download and install HikBridge on a Windows PC connected to the terminal.</li><li>Open Manage HikBridge and enter this device ID and bridge key.</li><li>Test both connections, then select Save &amp; start service.</li></ol><div className="form-actions form-actions-split"><a className="button button-secondary" href={installerDownloadPath} target="_blank" rel="noreferrer"><Download size={14} aria-hidden />Download installer</a><Button onClick={onClose}>I stored the key</Button></div></div> : null}</Modal>;
+}
+
+function MergeDeviceModal({ target, devices, onClose }: { target: Device; devices: Device[]; onClose(): void }) {
+  const candidates = devices.filter((device) => device.id !== target.id && device.branchId === target.branchId);
+  const [sourceDeviceId, setSourceDeviceId] = useState(candidates[0]?.id ?? "");
+  const [confirmed, setConfirmed] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<MergeDeviceEnrollmentDataResult | null>(null);
+
+  async function merge() {
+    if (sourceDeviceId === "" || !confirmed) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      setResult(await mergeDeviceEnrollmentData({
+        sourceDeviceId,
+        targetDeviceId: target.id,
+        confirmedSamePhysicalDevice: true,
+      }));
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Enrollment data could not be merged");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return <Modal open title="Merge duplicate device data" description={`Keep ${target.name} (${target.id}) and copy cloud enrollment data into it.`} onClose={submitting ? () => undefined : onClose}><div className="modal-content">{error ? <ErrorState message={error} /> : null}{result ? <><div className="credential-warning"><Check size={18} /><span><strong>Merge completed</strong><small>{result.mappedIdentities} employee mappings and {result.enrollmentRecords} enrollment records are now attached to {target.id}.</small></span></div><p className="modal-note">Run only the retained installation code and verify several punches. The source registration still exists and can be removed after verification.</p><div className="form-actions"><Button type="button" onClick={onClose}>Done</Button></div></> : candidates.length === 0 ? <EmptyState title="No same-branch duplicate" message="Only another registration in the same branch can be merged into this device." /> : <><div className="form-field"><label htmlFor="merge-source-device">Duplicate installation code to copy from</label><select id="merge-source-device" value={sourceDeviceId} onChange={(event) => setSourceDeviceId(event.target.value)}>{candidates.map((device) => <option key={device.id} value={device.id}>{device.name} · {device.id}</option>)}</select></div><label className="platform-checkbox"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>I confirm both installation codes connect to the same physical Hikvision terminal.</span></label><p className="modal-note">This copies employee-number mappings and enrollment status only. Fingerprint templates remain inside the terminal, and the source registration is not changed.</p><div className="form-actions"><Button type="button" variant="secondary" disabled={submitting} onClick={onClose}>Cancel</Button><Button type="button" disabled={submitting || sourceDeviceId === "" || !confirmed} onClick={merge}>{submitting ? "Merging…" : "Merge enrollment data"}</Button></div></>}</div></Modal>;
+}
+
+function RemoveDeviceModal({ device, onClose, onRemoved }: { device: Device; onClose(): void; onRemoved(): void }) {
+  const [confirmation, setConfirmation] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function remove() {
+    if (confirmation !== device.id) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await removeDevice({ deviceId: device.id });
+      onRemoved();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Device could not be removed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return <Modal open title="Remove device permanently" description="The bridge registration will be revoked and removed. Historical attendance is preserved." onClose={submitting ? () => undefined : onClose}><div className="modal-content">{error ? <ErrorState message={error} /> : null}<div className="delete-summary"><Trash2 size={18} /><span><strong>{device.name}</strong><small>{device.id} · {device.branchName}</small></span></div><p className="modal-note">Stop HikBridge on the client PC first. Removal deletes the device, credential, queued commands, identity mappings, and enrollment state. This cannot be undone.</p><div className="form-field"><label htmlFor="remove-device-confirmation">Type <strong>{device.id}</strong> to confirm</label><input id="remove-device-confirmation" autoFocus autoComplete="off" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></div><div className="form-actions"><Button type="button" variant="secondary" disabled={submitting} onClick={onClose}>Cancel</Button><Button type="button" variant="danger" disabled={submitting || confirmation !== device.id} onClick={remove}>{submitting ? "Removing…" : "Remove device"}</Button></div></div></Modal>;
 }

@@ -10,8 +10,10 @@ import { processAttendanceRecalculationJobs } from "./attendance/recalculation-j
 import { recalculateHolidayChange, recalculateLeaveChange } from "./attendance/source-change-triggers.js";
 import { createBranch, deleteBranch } from "./branches/management.js";
 import { createDepartment } from "./departments/management.js";
+import { mergeDeviceEnrollmentData } from "./devices/migration.js";
 import {
   provisionDevice,
+  removeDevice,
   rotateDeviceCredential,
   setDeviceEnabled,
 } from "./devices/provisioning.js";
@@ -121,8 +123,10 @@ export {
   hikbridgeV1Session,
   listPlatformSubscriptions,
   mapDeviceIdentity,
+  mergeDeviceEnrollmentData,
   processAttendanceRecalculationJobs,
   provisionDevice,
+  removeDevice,
   requestFingerprintEnrollment,
   recalculateAttendanceDay,
   recalculateHolidayChange,

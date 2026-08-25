@@ -5,12 +5,15 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createBranchInFirestore, deleteBranchInFirestore } from "../src/branches/management.js";
 import { createDepartmentInFirestore } from "../src/departments/management.js";
+import { mergeDeviceEnrollmentDataInFirestore } from "../src/devices/migration.js";
+import { DeviceProvisioningService } from "../src/devices/provisioning.js";
 import {
   createEmployeeInFirestore,
   queueFingerprintEnrollment,
   updateEmployeeDepartmentInFirestore,
 } from "../src/employees/management.js";
 import { bootstrapOrganizationInFirestore as bootstrapOrganization, type BootstrapOrganizationInput } from "../src/onboarding/bootstrap.js";
+import { identityKey } from "../src/ingest/firestore-repository.js";
 
 const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST;
 const run = emulatorHost === undefined ? describe.skip : describe;
@@ -59,6 +62,9 @@ run("organization onboarding", () => {
     await db.doc("users/owner-1").delete();
     await db.doc("users/owner-2").delete();
     await db.doc("bridgeDeviceRegistry/office-main-01").delete();
+    await db.doc("bridgeDeviceRegistry/office-duplicate-01").delete();
+    const replay = await db.collection("_bridgeReplay").where("deviceId", "==", "office-main-01").get();
+    await Promise.all(replay.docs.map((document) => document.ref.delete()));
   });
 
   afterAll(async () => {
@@ -206,6 +212,173 @@ run("organization onboarding", () => {
       organizationId: input.organizationId,
       branchId: "jaffna",
     })).rejects.toMatchObject({ code: "failed-precondition" } satisfies Partial<HttpsError>);
+  });
+
+  it("removes a device and operational bindings while preserving attendance history", async () => {
+    const auth = { uid: "owner-1", token: { email: "owner@example.com" } };
+    await bootstrapOrganizationInFirestore(db, auth, input);
+    const organization = db.doc(`organizations/${input.organizationId}`);
+    const device = organization.collection("devices").doc("office-main-01");
+    const registry = db.doc("bridgeDeviceRegistry/office-main-01");
+    const secretResourceName = "projects/demo-hikbridge/secrets/hikbridge-test";
+    await Promise.all([
+      device.set({
+        id: "office-main-01",
+        name: "Main Entrance",
+        branchId: input.branchId,
+        enabled: true,
+        connectionStatus: "online",
+      }),
+      registry.set({
+        organizationId: input.organizationId,
+        branchId: input.branchId,
+        state: "active",
+        enabled: true,
+        deviceDocumentPath: device.path,
+        secretResourceName,
+        secretVersionNames: [`${secretResourceName}/versions/1`],
+      }),
+      device.collection("commands").doc("command-1").set({ deviceId: "office-main-01", state: "queued" }),
+      device.collection("commandLocks").doc("fingerprint").set({ deviceId: "office-main-01" }),
+      organization.collection("deviceIdentities").doc("identity-1").set({ deviceId: "office-main-01" }),
+      organization.collection("unmappedIdentities").doc("unmapped-1").set({ deviceId: "office-main-01" }),
+      organization.collection("deviceEnrollments").doc("enrollment-1").set({ deviceId: "office-main-01" }),
+      organization.collection("attendanceEvents").doc("historical-event").set({ deviceId: "office-main-01" }),
+      db.collection("_bridgeReplay").doc("replay-1").set({ deviceId: "office-main-01" }),
+    ]);
+
+    const deletedSecrets: string[] = [];
+    const service = new DeviceProvisioningService(db, {
+      async createSecret() { return [{ name: "unused" }]; },
+      async addSecretVersion() { return [{ name: "unused/versions/1" }]; },
+      async deleteSecret({ name }: { name: string }) { deletedSecrets.push(name); return [{}]; },
+    });
+    const result = await service.remove({ deviceId: "office-main-01" }, auth);
+
+    const [deletedRegistry, deletedDevice, deletedCommand, deletedLock, historicalEvent, audits] = await Promise.all([
+      registry.get(),
+      device.get(),
+      device.collection("commands").doc("command-1").get(),
+      device.collection("commandLocks").doc("fingerprint").get(),
+      organization.collection("attendanceEvents").doc("historical-event").get(),
+      organization.collection("deviceDeletionAudits").get(),
+    ]);
+    expect(result).toEqual({
+      deviceId: "office-main-01",
+      organizationId: input.organizationId,
+      removed: true,
+      deletedBindings: 4,
+    });
+    expect(deletedSecrets).toEqual([secretResourceName]);
+    expect(deletedRegistry.exists).toBe(false);
+    expect(deletedDevice.exists).toBe(false);
+    expect(deletedCommand.exists).toBe(false);
+    expect(deletedLock.exists).toBe(false);
+    expect(historicalEvent.exists).toBe(true);
+    expect(audits.docs).toHaveLength(1);
+    expect(audits.docs[0]?.data()).toMatchObject({
+      action: "device_removed",
+      deviceId: "office-main-01",
+      deviceName: "Main Entrance",
+      historicalAttendancePreserved: true,
+      actorId: "owner-1",
+    });
+  });
+
+  it("merges enrollment metadata into the retained registration without changing the source", async () => {
+    const auth = { uid: "owner-1", token: { email: "owner@example.com" } };
+    await bootstrapOrganizationInFirestore(db, auth, input);
+    const organization = db.doc(`organizations/${input.organizationId}`);
+    const sourceId = "office-duplicate-01";
+    const targetId = "office-main-01";
+    const sourceDevice = organization.collection("devices").doc(sourceId);
+    const targetDevice = organization.collection("devices").doc(targetId);
+    const sourceKey = identityKey(sourceId, "EMP-17");
+    const targetKey = identityKey(targetId, "EMP-17");
+    await Promise.all([
+      sourceDevice.set({ name: "Duplicate", branchId: input.branchId, deviceSerial: "SERIAL-001", enabled: true }),
+      targetDevice.set({ name: "Retained", branchId: input.branchId, deviceSerial: "SERIAL-001", enabled: true }),
+      db.doc(`bridgeDeviceRegistry/${sourceId}`).set({
+        organizationId: input.organizationId,
+        branchId: input.branchId,
+        state: "active",
+        enabled: true,
+        deviceDocumentPath: sourceDevice.path,
+      }),
+      db.doc(`bridgeDeviceRegistry/${targetId}`).set({
+        organizationId: input.organizationId,
+        branchId: input.branchId,
+        state: "active",
+        enabled: true,
+        deviceDocumentPath: targetDevice.path,
+      }),
+      organization.collection("deviceIdentities").doc(sourceKey).set({
+        organizationId: input.organizationId,
+        branchId: input.branchId,
+        deviceId: sourceId,
+        employeeNo: "EMP-17",
+        employeeId: "employee-17",
+        active: true,
+      }),
+      organization.collection("deviceEnrollments").doc(sourceKey).set({
+        organizationId: input.organizationId,
+        branchId: input.branchId,
+        deviceId: sourceId,
+        employeeNo: "EMP-17",
+        employeeId: "employee-17",
+        state: "enrolled",
+        fingerPrintId: 2,
+        quality: 87,
+        enrolledAt: new Date("2026-08-25T08:30:00Z"),
+      }),
+      organization.collection("unmappedIdentities").doc(targetKey).set({
+        organizationId: input.organizationId,
+        branchId: input.branchId,
+        deviceId: targetId,
+        employeeNo: "EMP-17",
+        state: "unmapped",
+      }),
+    ]);
+
+    const result = await mergeDeviceEnrollmentDataInFirestore(db, auth, {
+      sourceDeviceId: sourceId,
+      targetDeviceId: targetId,
+      confirmedSamePhysicalDevice: true,
+    });
+    const [targetIdentity, targetEnrollment, sourceIdentity, targetUnmapped, audits] = await Promise.all([
+      organization.collection("deviceIdentities").doc(targetKey).get(),
+      organization.collection("deviceEnrollments").doc(targetKey).get(),
+      organization.collection("deviceIdentities").doc(sourceKey).get(),
+      organization.collection("unmappedIdentities").doc(targetKey).get(),
+      organization.collection("deviceMergeAudits").get(),
+    ]);
+
+    expect(result).toMatchObject({
+      sourceDeviceId: sourceId,
+      targetDeviceId: targetId,
+      mappedIdentities: 1,
+      enrollmentRecords: 1,
+      resolvedUnmappedIdentities: 1,
+      serialVerified: true,
+    });
+    expect(targetIdentity.data()).toMatchObject({
+      deviceId: targetId,
+      employeeNo: "EMP-17",
+      employeeId: "employee-17",
+      migratedFromDeviceId: sourceId,
+    });
+    expect(targetEnrollment.data()).toMatchObject({
+      deviceId: targetId,
+      employeeId: "employee-17",
+      state: "enrolled",
+      fingerPrintId: 2,
+      quality: 87,
+      migratedFromDeviceId: sourceId,
+    });
+    expect(targetEnrollment.get("fingerData")).toBeUndefined();
+    expect(sourceIdentity.exists).toBe(true);
+    expect(targetUnmapped.data()).toMatchObject({ state: "resolved", resolvedEmployeeId: "employee-17" });
+    expect(audits.docs).toHaveLength(1);
   });
 
   it("creates an employee and queues one template-free enrollment command per terminal", async () => {

@@ -3,7 +3,10 @@ param(
     [switch]$BuildInstaller,
     [string]$JavaHome = '',
     [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$')]
-    [string]$Version = '0.1.0'
+    [string]$Version = '0.1.0',
+    [string]$UpdateManifestURL = '',
+    [string]$CloudIngestURL = 'https://asia-south1-infact-attendance-128ee.cloudfunctions.net/hikbridgeV1Events',
+    [string]$RealtimeSessionURL = 'https://asia-south1-infact-attendance-128ee.cloudfunctions.net/hikbridgeV1Session'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -70,8 +73,11 @@ try {
     finally { Pop-Location }
 
     if ($BuildInstaller) {
+        if (-not $UpdateManifestURL) {
+            throw 'BuildInstaller requires -UpdateManifestURL so customer installers can check for updates.'
+        }
         Invoke-Checked {
-            powershell -NoProfile -ExecutionPolicy Bypass -File .\installer\build-installer.ps1 -Version $Version
+            powershell -NoProfile -ExecutionPolicy Bypass -File .\installer\build-installer.ps1 -Version $Version -UpdateManifestURL $UpdateManifestURL -CloudIngestURL $CloudIngestURL -RealtimeSessionURL $RealtimeSessionURL
         } 'Windows installer build'
     }
 }
